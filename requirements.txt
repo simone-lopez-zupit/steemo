@@ -1,0 +1,13 @@
+jira
+pdfkit
+beautifulsoup4
+requests
+openai
+pandas
+tqdm
+scikit-learn
+numpy
+faiss-cpu
+fastapi 
+uvicorn
+python-dotenv
