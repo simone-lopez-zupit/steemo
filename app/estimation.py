@@ -4,7 +4,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 from app.models import StoryRequest
-from app.jira_utils import generate_pdf_base64_from_jira, get_issue_text_async
+from app.jira_utils import get_issue_text_async
 from app.embedding_utils import get_embedding, check_similarity, faiss_index, tasks
 from app.config import MODEL_NAME, NUM_SEMANTIC_DESCRIPTION, TOP_K_SIMILAR
 from app.prompts import (
@@ -57,25 +57,16 @@ async def estimate_with_similars(data: StoryRequest) -> dict:
         summary_comment = ""
 
         if data.search_files:
-            query_pdf_b64 = await to_thread(generate_pdf_base64_from_jira, data.issue_key)
+            query_text = await get_issue_text_async(data.issue_key)
+
             candidate_scores = {}
 
             for _ in range(NUM_SEMANTIC_DESCRIPTION):
                 summary_resp = await aio_client.chat.completions.create(
                     model="gpt-4o",
-                    messages=[{
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "file",
-                                "file": {
-                                    "filename": f"{data.issue_key}.pdf",
-                                    "file_data": f"data:application/pdf;base64,{query_pdf_b64}"
-                                }
-                            },
-                            {"type": "text", "text": ABSTRACT_SUMMARY_PROMPT},
-                        ],
-                    }],
+                    messages=[
+                        {"role": "user", "content": f"{query_text}\n\n{ABSTRACT_SUMMARY_PROMPT}"}
+                    ],
                     temperature=1,
                 )
 
