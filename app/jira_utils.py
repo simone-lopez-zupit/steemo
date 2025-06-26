@@ -54,32 +54,32 @@ def get_issue_text_with_described_images(issue_key: str) -> str:
 
     soup = BeautifulSoup(html_desc, "html.parser")
 
-    for idx, img_tag in enumerate(soup.find_all("img")):
-        src = img_tag.get("src")
-        if not src:
-            img_tag.replace_with(f"(Figura {idx+1} non disponibile)")
-            continue
-        img_url = src if src.startswith("http") else JIRA_URL + src
-        try:
-            r = requests.get(img_url, auth=(EMAIL, API_TOKEN))
-            if r.status_code == 200 and len(r.content) >= 5000:
-                mime = r.headers.get("Content-Type", "image/png")
-                b64 = base64.b64encode(r.content).decode()
-                img_prompt = [
-                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
-                    {"type": "text", "text": IMAGE_DESCRIPTION_PROMPT}
-                ]
-                caption_resp = openai.OpenAI(api_key=os.getenv("OPENAI_KEY")).chat.completions.create(
-                    model="gpt-4o",
-                    messages=[{"role": "user", "content": img_prompt}],
-                    temperature=0,
-                )
-                caption = caption_resp.choices[0].message.content.strip()
-                img_tag.replace_with(f"(Figura {idx+1}) {caption}")
-            else:
-                img_tag.replace_with(f"(Figura {idx+1} non caricata)")
-        except Exception:
-            img_tag.replace_with(f"(Figura {idx+1} non disponibile)")
+    # for idx, img_tag in enumerate(soup.find_all("img")):
+    #     src = img_tag.get("src")
+    #     if not src:
+    #         img_tag.replace_with(f"(Figura {idx+1} non disponibile)")
+    #         continue
+    #     img_url = src if src.startswith("http") else JIRA_URL + src
+    #     try:
+    #         r = requests.get(img_url, auth=(EMAIL, API_TOKEN))
+    #         if r.status_code == 200 and len(r.content) >= 5000:
+    #             mime = r.headers.get("Content-Type", "image/png")
+    #             b64 = base64.b64encode(r.content).decode()
+    #             img_prompt = [
+    #                 {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+    #                 {"type": "text", "text": IMAGE_DESCRIPTION_PROMPT}
+    #             ]
+    #             caption_resp = openai.OpenAI(api_key=os.getenv("OPENAI_KEY")).chat.completions.create(
+    #                 model="gpt-4o",
+    #                 messages=[{"role": "user", "content": img_prompt}],
+    #                 temperature=0,
+    #             )
+    #             caption = caption_resp.choices[0].message.content.strip()
+    #             img_tag.replace_with(f"(Figura {idx+1}) {caption}")
+    #         else:
+    #             img_tag.replace_with(f"(Figura {idx+1} non caricata)")
+    #     except Exception:
+    #         img_tag.replace_with(f"(Figura {idx+1} non disponibile)")
 
     clean = soup.get_text(separator="\n").strip()
     return f"{summary}\n\n{clean}"

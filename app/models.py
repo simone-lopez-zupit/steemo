@@ -6,3 +6,4 @@ class StoryRequest(BaseModel):
     additional_comment: Optional[str] = ""
     search_files: bool = False
     similarity_threshold: float = 0.70
+    max_fib_distance: Optional[int] = 1
