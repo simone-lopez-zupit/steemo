@@ -14,33 +14,10 @@
 - Supporta immagini integrate, PDF dinamici, e ricerca semantica FAISS
 
 ---
+## env
+copiare il file .env.example in .env (le due api sono contenute in last pass)
 
-## 🧩 Requisiti
+## 🐳 Avvio con Docker 
+- docker build -t steemo-app .
 
-| Componente      | Descrizione                                               |
-|------------------|-----------------------------------------------------------|
-| Python           | 3.11                                                      |
-| wkhtmltopdf      | Programma esterno per convertire HTML in PDF              |
-| OpenAI API Key   | Necessaria per generare embedding e prompt                |
-| Jira API Token   | Accesso al tuo workspace Jira cloud                       |
-
----
-## Installare wkhtmltopdf (obbligatorio)
-wkhtmltopdf è un programma esterno che converte HTML in PDF. È richiesto per far funzionare STEEMO correttamente.
-
-👉 Windows
-Vai su: https://wkhtmltopdf.org/downloads.html
-
-Scarica Windows 64-bit (MSVC)
-
-Installa lasciando il percorso predefinito
-
-Nel file .env, imposta il path così:
-
-WKHTML_PATH=C:\\Program Files\\wkhtmltopdf\\bin\\wkhtmltopdf.exe
-
-## Embeddings
-scaricare embeddings per database vettoriale https://drive.google.com/file/d/1tQhXguzVyvwrlQz6ysLBkApFc7j7KiG_/view?usp=sharing e inserire il file nella cartella data come in esempio
-
-## 🚀 Step 6 – Avviare l’applicazione
-uvicorn app.main:app --reload
+- docker run -d -p 8000:80 --env-file .env --name steemo steemo-app
