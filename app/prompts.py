@@ -22,9 +22,7 @@ TASK_SIMILARITY_PROMPT_TEMPLATE = lambda target_text, candidate_text: (
 
 STORY_POINT_PROMPT = (
     "Sei un assistente agile. Dato il testo di una user story, restituisci lo story point corretto "
-    "in scala di Fibonacci ovvero compreso in questa lista [0.5, 1, 2, 3, 5, 8, 13, 21] seguito da una motivazione tecnica della scelta, "
-    "indicando i fattori che impattano lo sforzo di sviluppo: complessità, numero di funzionalità, input utente, "
-    "dipendenze esterne, o altro."
+    "in scala di Fibonacci ovvero compreso in questa lista [0.5, 1, 2, 3, 5, 8, 13, 21]"
 )
 
 ABSTRACT_SUMMARY_PROMPT = (
