@@ -3,7 +3,7 @@ from app.config import JIRA_URL, EMAIL, API_TOKEN,STORY_POINTS_FLD
 from bs4 import BeautifulSoup
 from jira import JIRA
 from asyncio import to_thread
-
+import re
 from app.models import JQLRequest
 import json
 from pathlib import Path
@@ -27,54 +27,72 @@ def get_issue_text_with_described_images(issue_key: str) -> str:
     soup = BeautifulSoup(html_desc, "html.parser")
     clean = soup.get_text(separator="\n").strip()
     return f"{summary}\n\n{clean}"
+# def get_issue_text_with_described_images(issue_key: str) -> str:
+#     issue = jira.issue(issue_key, expand="renderedFields")
+#     summary = issue.fields.summary
+#     html_desc = issue.renderedFields.description or ""
+
+#     soup = BeautifulSoup(html_desc, "html.parser")
+#     clean_desc = soup.get_text(separator="\n").strip()
+
+#     raw_ac = getattr(issue.fields, "customfield_11332", None)
+#     ac_items = []
+    
+#     if raw_ac:
+#         text_matches = re.findall(r'text:\s*>?-?\s*(.*?)(?=\s+checked:)', raw_ac, flags=re.DOTALL)
+#         ac_items = [re.sub(r'\s+', ' ', match.strip()) for match in text_matches]
+                
+#     for i in range(len(ac_items)) :
+#         ac_items[i]=f"Obbiettivo:{i+1}.{ac_items[i]}"
+#     ac_items = "\n\n".join(ac_items)
+#     if(len(ac_items)>0):
+#         return f"{summary}\n\n{clean_desc}\n\n**Obbiettivi:**\n\n{ac_items}"
+#     else:
+#         return f"{summary}\n\n{clean_desc}"
 
 async def get_issue_text_async(issue_key: str) -> str:
     return await to_thread(get_issue_text_with_described_images, issue_key)
 
 async def get_all_queried_stories(jqlRequest: JQLRequest):
-    dict_key_issues = {}
-    if(jqlRequest.project=="all"):
-        projects=jira.projects()
-        keys=[proj.key for proj in projects]
-
-        for k in keys:
-            issues = []
-            chunk_size = 100
-            start = 0
-           
-            jql = (
-                f'project = {k} AND issuetype = Story '
-                'AND "Story Points" IS NOT EMPTY '
-                f'AND {jqlRequest.date_jql}'
-            )
-            
-            while True:
-                batch = jira.search_issues(jql, startAt=start, maxResults=chunk_size,fields=f"summary,{STORY_POINTS_FLD}")
-                if len(batch) == 0:
-                    break
-                issues.extend(batch)
-                start += chunk_size
-            dict_key_issues[k] = filter_trained(issues)
-    else:
-        issues = []
-        chunk_size = 100
+    def fetch_issues(jql: str):
+        all_issues = []
         start = 0
-        
+        chunk = 100
+        while True:
+            batch = jira.search_issues(
+                jql,
+                startAt=start,
+                maxResults=chunk,
+                fields=f"summary,{STORY_POINTS_FLD},created",
+                json_result=False
+            )
+            if not batch:
+                break
+            all_issues.extend(batch)
+            start += chunk
+        return all_issues
+
+    if jqlRequest.project == "all":
+        jql = (
+            'issuetype = Story AND "Story Points" IS NOT EMPTY '
+            f'AND {jqlRequest.date_jql}'
+        )
+    else:
         jql = (
             f'project = {jqlRequest.project} AND issuetype = Story '
             'AND "Story Points" IS NOT EMPTY '
             f'AND {jqlRequest.date_jql}'
         )
-        
-        while True:
-            batch = jira.search_issues(jql, startAt=start, maxResults=chunk_size,fields=f"summary,{STORY_POINTS_FLD}")
-            if len(batch) == 0:
-                break
-            issues.extend(batch)
-            start += chunk_size
-        dict_key_issues[jqlRequest.project] = filter_trained(issues)
+
+    all_tasks = await to_thread(fetch_issues, jql)
+
+    filtered = [i for i in all_tasks if i.key not in trained_issues_set]
+
     return [
-        (issue.key, getattr(issue.fields, STORY_POINTS_FLD, "N/A"))
-        for issues in dict_key_issues.values()
-        for issue in issues
-    ]
+    (
+        issue.key,
+        getattr(issue.fields, STORY_POINTS_FLD, "N/A"),
+        issue.fields.created  
+    )
+    for issue in filtered
+]

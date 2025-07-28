@@ -9,17 +9,20 @@ from asyncio import gather
 
 import openai
 from collections import Counter
-
-from app.models import JQLRequest, StoryRequest
+import json
+from app.models import EstimationResponse, JQLRequest, StoryRequest
 from app.jira_utils import get_all_queried_stories, get_issue_text_async
-from app.embedding_utils import get_embedding, check_similarity, faiss_index, tasks
+from app.embedding_utils import filter_similar_tasks, get_embedding, check_similarity, faiss_index, ollama_check_similarity, ollama_response, tasks
 from app.config import MODEL_NAME, NUM_SEMANTIC_DESCRIPTION, TOP_K_SIMILAR
 from app.prompts import (
     ABSTRACT_SUMMARY_PROMPT,
     FINAL_ESTIMATION_COMMENT_PROMPT_TEMPLATE,
-    STORY_POINT_PROMPT
+    STORY_POINT_PROMPT,
+    STORY_POINT_PROMPT_WITH_TEXT
 )
-from app.estimation_utils import analyze_results
+from app.estimation_utils import analyze_results, get_week_of_month
+from datetime import datetime
+
 aio_client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_KEY"))
 
 
@@ -36,11 +39,11 @@ def is_within_fib_steps(estimated: float, other: float, max_steps: int) -> bool:
     except ValueError:
         return False
 
-async def estimate_with_similars(data: StoryRequest) -> Dict[str, Any]:
+async def estimate_with_similars(data: StoryRequest) -> EstimationResponse:
     try:
-        full_input = await get_issue_text_async(data.issue_key)
-        if data.additional_comment:
-            full_input += f"\n\n*Importanti* aggiornamenti: {data.additional_comment}"
+        full_input = await get_issue_text_async(data.issueKey)
+        if data.additionalComment:
+            full_input += f"\n\n **Importanti aggiornamenti:**{data.additionalComment}"
 
         estimate_tasks = [
             aio_client.chat.completions.create(
@@ -51,8 +54,9 @@ async def estimate_with_similars(data: StoryRequest) -> Dict[str, Any]:
             )
             for _ in range(5)
         ]
-        sp_responses = await gather(*estimate_tasks)
 
+        sp_responses = await gather(*estimate_tasks)
+        
         raw_outputs, estimates = [], []
         for i, resp in enumerate(sp_responses, 1):
             out = resp.choices[0].message.content.strip()
@@ -60,6 +64,10 @@ async def estimate_with_similars(data: StoryRequest) -> Dict[str, Any]:
             m = re.match(r"^\s*(\d+(\.\d+)?)", out.splitlines()[0])
             if m:
                 estimates.append(float(m.group(1)))
+        #estimates=[1]*5
+    
+        raw_outputs = [str(estimates[0])] * 5 
+        
 
         consensus_estimate = next((v for v in set(estimates) if estimates.count(v) >= 4), None)
         estimation_source = "consenso" if consensus_estimate is not None else "mediato"
@@ -67,15 +75,15 @@ async def estimate_with_similars(data: StoryRequest) -> Dict[str, Any]:
 
         min_est, max_est   = min(estimates, default=0), max(estimates, default=0)
         min_fib, max_fib   = closest_fibonacci(min_est), closest_fibonacci(max_est)
-        min_idx            = max(FIBONACCI_STEPS.index(min_fib) - 1, 0)
-        max_idx            = min(FIBONACCI_STEPS.index(max_fib) + 1, len(FIBONACCI_STEPS) - 1)
+        min_idx            = max(FIBONACCI_STEPS.index(min_fib) - data.maxFibDistance, 0)
+        max_idx            = min(FIBONACCI_STEPS.index(max_fib) + data.maxFibDistance, len(FIBONACCI_STEPS) - 1)
         allowed_idx        = set(range(min_idx, max_idx + 1))
 
-        should_search = (consensus_estimate is None) or data.search_files
+        should_search = (consensus_estimate is None) or data.searchFiles
         verified_similars: Dict[str, list] = defaultdict(list)
 
         if should_search:
-            query_text = await get_issue_text_async(data.issue_key)
+            query_text = await get_issue_text_async(data.issueKey)
 
             abstracts = [
                 (await aio_client.chat.completions.create(
@@ -93,17 +101,16 @@ async def estimate_with_similars(data: StoryRequest) -> Dict[str, Any]:
                 q_emb = get_embedding(abstr).reshape(1, -1)
                 scores, idxs = faiss_index.search(q_emb, TOP_K_SIMILAR)
                 for s, idx in zip(scores[0], idxs[0]):
-                    if s < data.similarity_threshold:
+                    if s < data.similarityThreshold:
                         continue
                     key = tasks[idx]["story_key"]
-                    if key != data.issue_key and key not in cand_scores:
+                    if key != data.issueKey and key not in cand_scores:
                         cand_scores[key] = s
                     if len(cand_scores) >= TOP_K_SIMILAR:
                         break
 
-            found_keys = {k for k in await gather(
-                *[check_similarity(full_input, k) for k in cand_scores]
-            ) if k}
+            found_keys = await filter_similar_tasks(cand_scores.keys(), full_input)
+
 
             for t in tasks:
                 if t["story_key"] in found_keys:
@@ -118,7 +125,7 @@ async def estimate_with_similars(data: StoryRequest) -> Dict[str, Any]:
                     verified_similars[str(sp_val)].append({
                         "key":            t["story_key"],
                         "description":    t["description"],
-                        "similarity_score": f"{sim:.4f}"
+                        "similarityScore": f"{sim:.4f}"
                     })
 
         if consensus_estimate is None:
@@ -140,47 +147,100 @@ async def estimate_with_similars(data: StoryRequest) -> Dict[str, Any]:
                 estimation_source = "fallback_median"
 
 
-        output_to_show=""
-        for out in raw_outputs:
-            m = re.match(r"^\s*(\d+(\.\d+)?)", out.splitlines()[0])
-            if float(m.group(1))==float(estimated_sp):
-                output_to_show=out.splitlines()[2:]
-        return {
-            "issue_key":            data.issue_key,
-            "estimated_storypoints": estimated_sp,
-            "raw_model_output_full": output_to_show,
-            "estimation_method":     estimation_source,
-            "verified_similar_tasks": verified_similars if data.search_files else {},
+        # output_to_show=""
+        
+        # for out in raw_outputs:
+        #     m = re.match(r"^\s*(\d+(\.\d+)?)", out.splitlines()[0])
+        #     if float(m.group(1))==float(estimated_sp):
+        #         output_to_show=out.splitlines()[2:]
+        # output = await aio_client.chat.completions.create(
+        #     model=MODEL_NAME,
+        #     messages=[
+        #         {"role": "system", "content": STORY_POINT_PROMPT_WITH_TEXT},
+        #         {"role": "user",   "content": f"sp:{estimated_sp}, storia:{full_input}"}
+        #     ],
+        #     temperature=0,
+        # )
+
+        # output_to_show = output.choices[0].message.content.strip()
+        # output_to_show=output_to_show.splitlines()[2:]
+        output_to_show= await ollama_response(estimated_sp,full_input)
+
+        response={
+            "issueKey":            data.issueKey,
+            "estimatedStorypoints": estimated_sp,
+            "rawModelOutputFull": output_to_show,
+            "estimationMethod":     estimation_source,
+            "verifiedSimilarTasks": verified_similars if data.searchFiles else {},
         }
+        print(response)
+        return response
 
     except Exception as ex:
         raise HTTPException(status_code=500, detail=str(ex))
     
 
-async def estimate_by_query(jqlRequest:JQLRequest):
-    issues=await get_all_queried_stories(jqlRequest)
-    print("issue to analyze: ",len(issues))
-    results=[]
-    for issue in issues:
+async def estimate_by_query(jqlRequest: JQLRequest):
+    if os.path.exists(jqlRequest.file_to_save):
+        with open(jqlRequest.file_to_save, "r") as f:
+            existing_results = json.load(f)
+        already_estimated_keys = {item["issue_key"] for item in existing_results}
+    else:
+        existing_results = []
+        already_estimated_keys = set()
+
+    issues = await get_all_queried_stories(jqlRequest)
+    print("Issues da analizzare:", len(issues))
+    total = len(issues)
+    processed = 0
+    skipped = 0
+
+    for idx, issue in enumerate(issues, start=1):
+        issue_key = issue[0]
+        true_points = issue[1]
+        created_at = issue[2]
+
+        if issue_key in already_estimated_keys:
+            skipped += 1
+            continue
+
+        date_obj = datetime.strptime(created_at[:10], "%Y-%m-%d")
+        month = date_obj.month
+        year = date_obj.year
+        week = get_week_of_month(created_at)
+
         req = StoryRequest(
-                issue_key=issue[0],
-                additional_comment="",
-                search_files=False,
-                similarity_threshold=0.7
-            )
+            issueKey=issue_key,
+            additionalComment="",
+            searchFiles=False,
+            similarityThreshold=0.7
+        )
+
         try:
             est = await estimate_with_similars(req)
-            sp   = est.get("estimated_storypoints", -1)
-            err  = None
+            sp = est.get("estimated_storypoints", -1)
+            err = None
         except Exception as e:
-            sp   = None
-            err  = str(e)
+            sp = None
+            err = str(e)
 
-        results.append({
-            "issue_key": issue[0],
-            "true_points": issue[1],
+        new_entry = {
+            "issue_key": issue_key,
+            "true_points": true_points,
             "stimated_points": sp,
+            "created": created_at,
+            "month": month,
+            "year": year,
+            "week_of_month": week,
             **({"error": err} if err else {})
-        })
-    analyze_results(results)
+        }
 
+        existing_results.append(new_entry)
+
+        with open(jqlRequest.file_to_save, "w") as f:
+            json.dump(existing_results, f, indent=4)
+
+        processed += 1
+        print(f"[{idx}/{total}] Elaborato: {issue_key} - Stimato: {sp}")
+
+    return {"estimated": processed, "skipped": skipped}

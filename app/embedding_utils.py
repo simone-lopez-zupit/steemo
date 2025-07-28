@@ -5,11 +5,14 @@ import faiss
 import openai
 import time
 import logging
+import httpx
+import re
+
 from collections import defaultdict
 from app.config import JSON_EMBED_FILE, OPENAI_KEY, TOP_K_SIMILAR, MAX_PARALLEL_AI
 from app.jira_utils import get_issue_text_async
-from asyncio import Semaphore
-from app.prompts import TASK_SIMILARITY_PROMPT_TEMPLATE
+from asyncio import Semaphore, gather
+from app.prompts import ABSTRACT_SUMMARY_PROMPT, STORY_POINT_PROMPT, STORY_POINT_PROMPT_WITH_TEXT, TASK_SIMILARITY_PROMPT_TEMPLATE, STORY_POINT_PROMPT_few_shots
 
 log = logging.getLogger(__name__)
 aio_client = openai.AsyncOpenAI(api_key=OPENAI_KEY)
@@ -33,30 +36,72 @@ def get_embedding(text: str) -> np.ndarray:
     faiss.normalize_L2(emb.reshape(1, -1))
     return emb
 
-# async def check_similarity(target_text: str, candidate_key: str, model: str = "gpt-4o") -> str | None:
-#     t_start = time.perf_counter()
-#     log.info("→ start  %s  %.3fs", candidate_key, t_start)
-#     try:
-#         candidate_text = await get_issue_text_async(candidate_key)
-#         prompt = {
-#             "role": "user",
-#                 "content": TASK_SIMILARITY_PROMPT_TEMPLATE(target_text, candidate_text),
-#         }
-#         async with semaphore:
-#             resp = await aio_client.chat.completions.create(
-#                 model=model,
-#                 messages=[prompt],
-#                 temperature=0,
-#             )
-#         if resp.choices[0].message.content.strip().lower() == "true":
-#             return candidate_key
-#         return None
-#     except Exception as ex:
-#         log.warning("Similarity check error for %s: %s", candidate_key, ex)
-#         return None
-#     finally:
-#         t_end = time.perf_counter()
-#         log.info("← end    %s  %.3fs (Δ%.2fs)", candidate_key, t_end, t_end - t_start)
-
 async def check_similarity(target_text: str, candidate_key: str, model: str = "gpt-4o") -> str | None:
     return candidate_key
+
+
+async def ollama_check_similarity(text1: str, text2: str) -> bool:
+    prompt = TASK_SIMILARITY_PROMPT_TEMPLATE(text1, text2)
+
+    payload = {
+        "model": "gemma3:latest",
+        "prompt": prompt,
+        "temperature": 0,
+        "seed": 42,
+        "stream": False
+    }
+
+    async with httpx.AsyncClient() as client:
+        r = await client.post("http://localhost:11434/api/generate", json=payload, timeout=30)
+        r.raise_for_status()
+        result = r.json()["response"].strip().lower()
+        print("[similarity result]", result)
+        return result.startswith("true")
+
+async def filter_similar_tasks(keys, full_input):
+    async def is_similar(k):
+        try:
+            candidate_text = await get_issue_text_async(k)
+            return k if await ollama_check_similarity(full_input, candidate_text) else None
+        except Exception as e:
+            print(f"Errore su {k}: {e}")
+            return None
+
+    results = await gather(*[is_similar(k) for k in keys])
+    return {k for k in results if k}
+
+async def ollama_summary(text1: str) -> float:
+    
+    payload = {
+        "model": "gemma3:latest",
+        "prompt": f"""{ABSTRACT_SUMMARY_PROMPT}\n\nStory:\n{text1}""",
+        "temperature": 0,
+        "seed": 42,
+        "stream": False
+    }
+    async with httpx.AsyncClient() as client:
+        r = await client.post("http://localhost:11434/api/generate", json=payload, timeout=30)
+        r.raise_for_status()
+        result = r.json()["response"].strip().lower()
+        return result
+    
+async def ollama_response(sp, storia) -> str:
+    payload = {
+        "model": "gemma3:latest",
+        "prompt": f"{STORY_POINT_PROMPT_WITH_TEXT}\nsp:{sp}, \n\nstoria:\n\n {storia}",
+        "temperature": 0,
+        "seed": 42,
+        "stream": False
+    }
+    async with httpx.AsyncClient() as client:
+        r = await client.post("http://localhost:11434/api/generate", json=payload, timeout=30)
+        r.raise_for_status()
+        result = r.json()["response"].strip()
+
+        # Rimuove eventuali markdown ```json``` o altri marker dal risultato
+        clean_result = re.sub(r'^```json|```$', '', result, flags=re.MULTILINE).strip()
+
+        # Parsing JSON automatico
+        clean_result
+
+        return clean_result
