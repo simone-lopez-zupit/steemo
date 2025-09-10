@@ -20,7 +20,7 @@ from app.prompts import (
     STORY_POINT_PROMPT,
     STORY_POINT_PROMPT_WITH_TEXT
 )
-from app.estimation_utils import analyze_results, get_week_of_month
+from app.estimation_utils import get_week_of_month
 from datetime import datetime
 
 aio_client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_KEY"))
@@ -215,10 +215,9 @@ async def estimate_by_query(jqlRequest: JQLRequest):
             searchFiles=False,
             similarityThreshold=0.7
         )
-
         try:
             est = await estimate_with_similars(req)
-            sp = est.get("estimated_storypoints", -1)
+            sp = est.get("estimatedStorypoints", -1)
             err = None
         except Exception as e:
             sp = None

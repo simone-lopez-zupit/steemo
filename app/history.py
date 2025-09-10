@@ -127,22 +127,31 @@ def prepare_total_bar_chart_data(request: ChartDataRequest, df: pd.DataFrame) ->
     return grouped
 
 
-def prepare_outlier_tasks(request:ChartDataRequest, df:pd.DataFrame) -> pd.DataFrame:
+def prepare_outlier_tasks(request: ChartDataRequest, df: pd.DataFrame) -> pd.DataFrame:
+    # filtro temporale
     df = df[(df["created"] >= request.startDate) & (df["created"] < request.endDate)]
 
+    # filtro per progetto
     if request.projects:
         df = df[df["project"].isin(request.projects)]
 
+    df = df.copy()
+
+    # mappa valori Fibonacci → indice
     scale_map = {v: i for i, v in enumerate(FIBONACCI_SCALE)}
 
-    idx_true = df["true_points"].map(scale_map).fillna(99)
-    idx_est  = df["stimated_points"].map(scale_map).fillna(99)
+    idx_true = df["true_points"].map(scale_map)
+    idx_est  = df["stimated_points"].map(scale_map)
 
+    # tieni solo righe in cui entrambi i valori sono nella scala
+    mask_ok = idx_true.notna() & idx_est.notna()
+    df = df[mask_ok].copy()
+
+    # distanza in passi Fibonacci
     df["fib_distance"] = (idx_true - idx_est).abs()
 
-    df_filtered = df[df["fib_distance"] > 1]
-    
-    return df_filtered
+    # outlier = distanza > 1
+    return df[df["fib_distance"] > 1]
 
 def to_total_bar_chart_format(df: pd.DataFrame):
     labels = ["Team", "AI"]

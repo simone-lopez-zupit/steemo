@@ -24,7 +24,6 @@ from app.prompts import (
     STORY_POINT_PROMPT,
     STORY_POINT_PROMPT_WITH_TEXT
 )
-from app.estimation_utils import analyze_results
 import math
 
 

@@ -4,7 +4,6 @@ import matplotlib.pyplot as plt
 from collections import defaultdict
 from typing import Optional
 
-# === CONFIGURAZIONE ===
 FIBONACCI_SCALE = [0, 0.5, 1, 2, 3, 5, 8, 13, 21]
 INPUT_FILE = os.path.join(os.path.dirname(__file__), "..", "..", "tutto.json")
 
@@ -49,14 +48,11 @@ def plot_data(data):
     ai_values = [weekly_totals[k]["ai"] for k in sorted_keys]
     fib_deltas = [weekly_fib_deltas[k] for k in sorted_keys]
 
-    # Calcola accuratezza % e differenze
     accuracy = [round((ai / true) * 100, 1) if true > 0 else 0 for ai, true in zip(ai_values, true_values)]
     delta_values = [ai - true for ai, true in zip(ai_values, true_values)]
 
-    # === PLOT ===
     plt.figure(figsize=(16, 10))
 
-    # 1️⃣ Team vs AI con area differenza
     plt.subplot(3, 1, 1)
     plt.plot(labels, true_values, marker='o', label="Team", linewidth=2)
     plt.plot(labels, ai_values, marker='s', label="AI", linewidth=2)
@@ -67,7 +63,6 @@ def plot_data(data):
     plt.legend()
     plt.grid(True)
 
-    # 2️⃣ Discrepanze Fibonacci
     plt.subplot(3, 1, 2)
     bars2 = plt.bar(labels, fib_deltas, color="orange")
     for bar, val in zip(bars2, fib_deltas):
@@ -80,7 +75,6 @@ def plot_data(data):
     plt.legend()
     plt.grid(True)
 
-    # 3️⃣ Accuratezza % stimata
     plt.subplot(3, 1, 3)
     bars3 = plt.bar(labels, accuracy, color="blue")
     for bar, val in zip(bars3, accuracy):
@@ -96,11 +90,10 @@ def plot_data(data):
     plt.tight_layout()
     plt.show()
 
-# === MAIN ===
 if __name__ == "__main__":
     data = load_data(INPUT_FILE)
 
-    # 🔁 FILTRI MODIFICABILI QUI:
+    
     project = None      # es. "NPMP" oppure None per tutti i progetti
     year = 2022         # oppure None per tutti gli anni
     month =None         # oppure None per tutti i mesi

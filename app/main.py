@@ -3,10 +3,8 @@ import sys
 from fastapi import FastAPI
 from app.estimation import estimate_by_query, estimate_with_similars
 from app.models import ChartDataRequest, ChartType, EstimationResponse, JQLRequest, StoryRequest
-from app.jira_utils import get_all_queried_stories
 from app.history import query_chart, query_outlier_tasks
 from fastapi.middleware.cors import CORSMiddleware
-from collections import defaultdict
 
 from app.estimation_utils import returnMockedES
 

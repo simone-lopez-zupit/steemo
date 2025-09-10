@@ -9,10 +9,10 @@ import httpx
 import re
 
 from collections import defaultdict
-from app.config import JSON_EMBED_FILE, OPENAI_KEY, TOP_K_SIMILAR, MAX_PARALLEL_AI
+from app.config import JSON_EMBED_FILE, OPENAI_KEY, MAX_PARALLEL_AI
 from app.jira_utils import get_issue_text_async
 from asyncio import Semaphore, gather
-from app.prompts import ABSTRACT_SUMMARY_PROMPT, STORY_POINT_PROMPT, STORY_POINT_PROMPT_WITH_TEXT, TASK_SIMILARITY_PROMPT_TEMPLATE, STORY_POINT_PROMPT_few_shots
+from app.prompts import ABSTRACT_SUMMARY_PROMPT, STORY_POINT_PROMPT_WITH_TEXT, TASK_SIMILARITY_PROMPT_TEMPLATE
 
 log = logging.getLogger(__name__)
 aio_client = openai.AsyncOpenAI(api_key=OPENAI_KEY)
@@ -97,11 +97,5 @@ async def ollama_response(sp, storia) -> str:
         r = await client.post("http://localhost:11434/api/generate", json=payload, timeout=30)
         r.raise_for_status()
         result = r.json()["response"].strip()
-
-        # Rimuove eventuali markdown ```json``` o altri marker dal risultato
         clean_result = re.sub(r'^```json|```$', '', result, flags=re.MULTILINE).strip()
-
-        # Parsing JSON automatico
-        clean_result
-
         return clean_result

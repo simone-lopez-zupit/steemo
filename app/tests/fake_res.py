@@ -16,6 +16,7 @@ if __name__ == "__main__":
             "year": entry["year"],
             "month": entry["month"],
             "week_of_month": entry["week_of_month"],
+            "created": entry.get("created", ""),
             "true_points": entry.get("true_points", 0),
             "stimated_points": 3.0
         }

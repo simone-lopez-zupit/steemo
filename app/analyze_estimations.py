@@ -3,7 +3,7 @@ import re
 from collections import defaultdict
 from typing import Optional
 
-INPUT_FILE = "ollama2023.json"
+INPUT_FILE = "tutto.json"
 
 FIBONACCI_SCALE = [0.5, 1, 2, 3, 5, 8, 13, 21]
 
@@ -20,10 +20,10 @@ def fib_distance(true_val, est_val) -> int:
 
 def analyze_estimations(
         filepath: str,
-        project_filter: Optional[str] = None,
+        project_filter: Optional[list[str]] = None,   # 👈 adesso lista
         month : Optional[int] = None,
         year  : Optional[int] = None,
-        week  : Optional[int] = None   # 🆕 1-5: settimana del mese
+        week  : Optional[int] = None   
 ):
     with open(filepath, encoding="utf-8") as f:
         data = json.load(f)
@@ -39,17 +39,16 @@ def analyze_estimations(
             continue
 
         proj  = extract_project(e.get("issue_key", ""))
+
         emon  = e.get("month")
         eyear = e.get("year")
-
-        # settimana: usa 'week_of_month' se c'è, altrimenti ricava da 'day'
-        ewom = e.get("week_of_month")
+        ewom  = e.get("week_of_month")
         if ewom is None:
-            day  = e.get("day", 1)            # default 1 se non c'è il campo
-            ewom = (day - 1) // 7 + 1         # 1-5
+            day  = e.get("day", 1)            
+            ewom = (day - 1) // 7 + 1        
 
-        # 🔍 filtri richiesti dall'utente
-        if project_filter and proj != project_filter:
+        # --- FILTRI -----------------------------------------------------
+        if project_filter and proj not in project_filter:   # 👈 qui il check sulla lista
             continue
         if month and emon != month:
             continue
@@ -57,19 +56,17 @@ def analyze_estimations(
             continue
         if week and ewom != week:
             continue
+        # ---------------------------------------------------------------
 
-        # aggregazioni globali
         total_true      += true_sp
         total_estimated += est_sp
         total_count     += 1
         if fib_distance(true_sp, est_sp) <= 1:
             correct_count += 1
 
-        # per progetto
         per_project[proj]["true_sum"]     += true_sp
         per_project[proj]["stimated_sum"] += est_sp
 
-        # mismatch elenco
         if fib_distance(true_sp, est_sp) > 1:
             mismatches.append({
                 "issue_key"   : e.get("issue_key"),
@@ -97,15 +94,7 @@ def analyze_estimations(
             print(f"   - {m['issue_key']}: team {m['true']}  vs  AI {m['estimated']}  (Δ={m['fib_distance']})")
     else:
         print("\n✅ Nessuna stima gravemente sbagliata (fib distance > 1)")
-
-# -----------------------------------------------------------------------
-# esempi d'uso
 if __name__ == "__main__":
-    # Tutto
-    # analyze_estimations(INPUT_FILE)
-
-    # Solo progetto "PROV", aprile 2023, 2ª settimana del mese
-    # analyze_estimations(INPUT_FILE, project_filter="PROV", month=4, year=2023, week=2)
 
     # Solo gennaio 2023, settimana 1
-    analyze_estimations(INPUT_FILE, month=None, year=2023, week=None)
+    analyze_estimations(INPUT_FILE, month=None, project_filter=["APCUP", "APCPS", "APMI"], year=2025, week=None)
