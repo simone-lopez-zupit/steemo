@@ -7,6 +7,9 @@ import re
 from app.models import JQLRequest
 import json
 from pathlib import Path
+from requests.auth import HTTPBasicAuth
+import requests
+
 trained_file_path = Path("data/trained_with.json")
 with trained_file_path.open("r", encoding="utf-8") as f:
     trained_data = json.load(f)
@@ -14,8 +17,11 @@ with trained_file_path.open("r", encoding="utf-8") as f:
 trained_issues_set = set()
 for issues in trained_data.values():
     trained_issues_set.update(issues)
-jira = JIRA(server=JIRA_URL, basic_auth=(EMAIL, API_TOKEN))
-
+jira = JIRA(
+    server=JIRA_URL,
+    basic_auth=(EMAIL, API_TOKEN),
+    options={"rest_api_version": "3"} 
+)
 def filter_trained(issues):
     return [i for i in issues if i.key not in trained_issues_set]
 
@@ -56,20 +62,40 @@ async def get_issue_text_async(issue_key: str) -> str:
 async def get_all_queried_stories(jqlRequest: JQLRequest):
     def fetch_issues(jql: str):
         all_issues = []
-        start = 0
+        url = f"{JIRA_URL}/rest/api/3/search/jql"
+        auth = HTTPBasicAuth(EMAIL, API_TOKEN)
+
+        next_token = None
         chunk = 100
+
         while True:
-            batch = jira.search_issues(
-                jql,
-                startAt=start,
-                maxResults=chunk,
-                fields=f"summary,{STORY_POINTS_FLD},created",
-                json_result=False
+            params = {
+                "jql": jql,
+                "maxResults": chunk,
+                "fields": ["summary", STORY_POINTS_FLD, "created"],
+            }
+            if next_token:
+                params["nextPageToken"] = next_token
+
+            response = requests.get(
+                url,
+                headers={"Accept": "application/json"},
+                params=params,
+                auth=auth
             )
-            if not batch:
+            response.raise_for_status()
+            data = response.json()
+
+            issues = data.get("issues", [])
+            if not issues:
                 break
-            all_issues.extend(batch)
-            start += chunk
+
+            all_issues.extend(issues)
+
+            next_token = data.get("nextPageToken")
+            if not next_token:
+                break
+
         return all_issues
 
     if jqlRequest.project == "all":
@@ -86,13 +112,13 @@ async def get_all_queried_stories(jqlRequest: JQLRequest):
 
     all_tasks = await to_thread(fetch_issues, jql)
 
-    filtered = [i for i in all_tasks if i.key not in trained_issues_set]
+    filtered = [i for i in all_tasks if i["key"] not in trained_issues_set]
 
     return [
-    (
-        issue.key,
-        getattr(issue.fields, STORY_POINTS_FLD, "N/A"),
-        issue.fields.created  
-    )
-    for issue in filtered
-]
+        (
+            issue["key"],
+            issue["fields"].get(STORY_POINTS_FLD, "N/A"),
+            issue["fields"]["created"]
+        )
+        for issue in filtered
+    ]

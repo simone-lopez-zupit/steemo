@@ -1,9 +1,8 @@
 import os
-import re
 import statistics
 from collections import defaultdict
-from typing import Optional, Dict, Any
-
+from typing import  Dict
+import pandas as pd
 from fastapi import HTTPException
 from asyncio import gather
 
@@ -12,13 +11,11 @@ from collections import Counter
 import json
 from app.models import EstimationResponse, JQLRequest, StoryRequest
 from app.jira_utils import get_all_queried_stories, get_issue_text_async
-from app.embedding_utils import filter_similar_tasks, get_embedding, check_similarity, faiss_index, ollama_check_similarity, ollama_response, tasks
+from app.embedding_utils import filter_similar_tasks, get_embedding, faiss_index_train,faiss_index_new,tasks_new, openai_description_with_factors, tasks, update_new_faiss_index
 from app.config import MODEL_NAME, NUM_SEMANTIC_DESCRIPTION, TOP_K_SIMILAR
 from app.prompts import (
     ABSTRACT_SUMMARY_PROMPT,
-    FINAL_ESTIMATION_COMMENT_PROMPT_TEMPLATE,
     STORY_POINT_PROMPT,
-    STORY_POINT_PROMPT_WITH_TEXT
 )
 from app.estimation_utils import get_week_of_month
 from datetime import datetime
@@ -44,30 +41,8 @@ async def estimate_with_similars(data: StoryRequest) -> EstimationResponse:
         full_input = await get_issue_text_async(data.issueKey)
         if data.additionalComment:
             full_input += f"\n\n **Importanti aggiornamenti:**{data.additionalComment}"
-
-        estimate_tasks = [
-            aio_client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[{"role": "system", "content": STORY_POINT_PROMPT},
-                          {"role": "user", "content": full_input}],
-                temperature=0,
-            )
-            for _ in range(5)
-        ]
-
-        sp_responses = await gather(*estimate_tasks)
         
-        raw_outputs, estimates = [], []
-        for i, resp in enumerate(sp_responses, 1):
-            out = resp.choices[0].message.content.strip()
-            raw_outputs.append(out)
-            m = re.match(r"^\s*(\d+(\.\d+)?)", out.splitlines()[0])
-            if m:
-                estimates.append(float(m.group(1)))
-        #estimates=[1]*5
-    
-        raw_outputs = [str(estimates[0])] * 5 
-        
+        estimates=await openai_chat_completion_for_times(full_input,5)        
 
         consensus_estimate = next((v for v in set(estimates) if estimates.count(v) >= 4), None)
         estimation_source = "consenso" if consensus_estimate is not None else "mediato"
@@ -81,25 +56,33 @@ async def estimate_with_similars(data: StoryRequest) -> EstimationResponse:
 
         should_search = (consensus_estimate is None) or data.searchFiles
         verified_similars: Dict[str, list] = defaultdict(list)
-
+        new_verified_similars: Dict[str, list] = defaultdict(list)
+        no_estimated=pd.read_csv("data/english_stories_with_emb_no_estimated.csv")
+        existing_row = no_estimated.loc[no_estimated['key'] == data.issueKey]
         if should_search:
-            query_text = await get_issue_text_async(data.issueKey)
+            query_text = await get_issue_text_async(data.issueKey)            
 
-            abstracts = [
-                (await aio_client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[{"role": "user",
-                               "content": f"{query_text}\n\n{ABSTRACT_SUMMARY_PROMPT}"}],
-                    temperature=1,      
-                )).choices[0].message.content.strip()
-                for _ in range(NUM_SEMANTIC_DESCRIPTION)
-            ]
+            if not existing_row.empty:
+                abstracts = existing_row['description'].tolist()
 
-            # Candidati similari via FAISS
+            else:
+                abstracts = [
+                    (
+                        await aio_client.chat.completions.create(
+                            model="gpt-4o",
+                            messages=[
+                                {"role": "user", "content": f"{query_text}\n\n{ABSTRACT_SUMMARY_PROMPT}"}
+                            ],
+                            temperature=1,
+                        )
+                    ).choices[0].message.content.strip()
+                    for _ in range(NUM_SEMANTIC_DESCRIPTION)
+                ]
+
             cand_scores = {}
             for abstr in abstracts:
                 q_emb = get_embedding(abstr).reshape(1, -1)
-                scores, idxs = faiss_index.search(q_emb, TOP_K_SIMILAR)
+                scores, idxs = faiss_index_train.search(q_emb, TOP_K_SIMILAR)
                 for s, idx in zip(scores[0], idxs[0]):
                     if s < data.similarityThreshold:
                         continue
@@ -127,6 +110,60 @@ async def estimate_with_similars(data: StoryRequest) -> EstimationResponse:
                         "description":    t["description"],
                         "similarityScore": f"{sim:.4f}"
                     })
+        
+
+
+# ============ 🔹 FAISS SEARCH: NEW INDEX ============ #
+               
+            if faiss_index_new is not None and len(tasks_new) > 0:
+                cand_scores_new = {}
+                for abstr in abstracts:
+                    q_emb = get_embedding(abstr).reshape(1, -1)
+                    scores, idxs = faiss_index_new.search(q_emb, TOP_K_SIMILAR)
+                    for s, idx in zip(scores[0], idxs[0]):
+                        if s < data.similarityThreshold:
+                            continue
+                        key = tasks_new[idx]["story_key"]
+                        if key != data.issueKey and key not in cand_scores_new:
+                            cand_scores_new[key] = s
+                        if len(cand_scores_new) >= TOP_K_SIMILAR:
+                            break
+                found_keys = await filter_similar_tasks(cand_scores_new.keys(), full_input)
+
+                for t in tasks_new:
+                    if t["story_key"] in found_keys:
+                        sp_val = float(t["storypoints"]) if t["storypoints"] else 0.0
+                        sim = cand_scores_new[t["story_key"]]
+                        new_verified_similars[str(sp_val)].append({
+                            "key": t["story_key"],
+                            "description": t["description"],
+                            "similarityScore": f"{sim:.4f}"
+                        })
+
+
+
+        best_description = abstracts[0]
+        best_score = -1.0
+        if(existing_row.empty):
+            for sp_group in verified_similars.values():
+                for item in sp_group:
+                    score = float(item["similarityScore"])
+                    if score > best_score:
+                        best_score = score
+                        best_description = item["description"]
+            
+        if existing_row.empty:           
+            embedding = get_embedding(best_description).reshape(1, -1)
+            embedding_json = json.dumps(embedding.tolist())
+
+            no_estimated.loc[len(no_estimated)] = [
+                data.issueKey,
+                best_description,
+                estimated_sp,
+                embedding_json
+            ]        
+            no_estimated.to_csv("data/english_stories_with_emb_no_estimated.csv", index=False)
+            update_new_faiss_index()
 
         if consensus_estimate is None:
             if verified_similars:
@@ -146,25 +183,7 @@ async def estimate_with_similars(data: StoryRequest) -> EstimationResponse:
                 estimated_sp   = closest_fibonacci(round(median_est, 2))
                 estimation_source = "fallback_median"
 
-
-        # output_to_show=""
-        
-        # for out in raw_outputs:
-        #     m = re.match(r"^\s*(\d+(\.\d+)?)", out.splitlines()[0])
-        #     if float(m.group(1))==float(estimated_sp):
-        #         output_to_show=out.splitlines()[2:]
-        # output = await aio_client.chat.completions.create(
-        #     model=MODEL_NAME,
-        #     messages=[
-        #         {"role": "system", "content": STORY_POINT_PROMPT_WITH_TEXT},
-        #         {"role": "user",   "content": f"sp:{estimated_sp}, storia:{full_input}"}
-        #     ],
-        #     temperature=0,
-        # )
-
-        # output_to_show = output.choices[0].message.content.strip()
-        # output_to_show=output_to_show.splitlines()[2:]
-        output_to_show= await ollama_response(estimated_sp,full_input)
+        output_to_show= await openai_description_with_factors(full_input,estimated_sp)
 
         response={
             "issueKey":            data.issueKey,
@@ -172,6 +191,7 @@ async def estimate_with_similars(data: StoryRequest) -> EstimationResponse:
             "rawModelOutputFull": output_to_show,
             "estimationMethod":     estimation_source,
             "verifiedSimilarTasks": verified_similars if data.searchFiles else {},
+            "newSimilarTasks": new_verified_similars if data.searchFiles else {},
         }
         print(response)
         return response
@@ -179,6 +199,21 @@ async def estimate_with_similars(data: StoryRequest) -> EstimationResponse:
     except Exception as ex:
         raise HTTPException(status_code=500, detail=str(ex))
     
+async def openai_chat_completion_for_times(full_input, times):
+    estimate_task=[
+        aio_client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "system", "content": STORY_POINT_PROMPT},
+                      {"role": "user", "content": full_input}],
+            temperature=0,
+        )
+        for _ in range(times)
+
+    ]
+
+    sp_response = await gather(*estimate_task, return_exceptions=True)
+    estimates=[float(resp.choices[0].message.content.strip()) for resp in sp_response]
+    return estimates
 
 async def estimate_by_query(jqlRequest: JQLRequest):
     if os.path.exists(jqlRequest.file_to_save):

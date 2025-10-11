@@ -44,3 +44,4 @@ class EstimationResponse(BaseModel):
     rawModelOutputFull: str
     estimationMethod: str
     verifiedSimilarTasks: Dict[str, List[SimilarTask]] = {}
+    newSimilarTasks: Dict[str, List[SimilarTask]] = {}

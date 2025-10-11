@@ -22,12 +22,13 @@ IMAGE_DESCRIPTION_PROMPT = (
 TASK_SIMILARITY_PROMPT_TEMPLATE = lambda target_text, candidate_text: (
     "Confronta tecnicamente questi due task Jira, ignorando completamente il contesto o il dominio. "
     "Valuta solo *cosa* viene chiesto di sviluppare, non *per chi* o *in che ambito*.\n"
-    "Rispondi `true` solo se i due task richiedono lo sviluppo della stessa funzionalità, con lo stesso tipo di sforzo implementativo.\n"
+    "Rispondi `true` solo se i due task richiedono lo sviluppo di funzionalità simili, con simile sforzo implementativo.\n"
     "---\nPRIMO TASK:\n"
     f"{target_text}\n\n"
     "---\nSECONDO TASK:\n"
     f"{candidate_text}\n\n"
     "Rispondi solo con `true` o `false`, minuscolo, senza spiegazioni."
+    "Due task simili possono essere ad esempio entrambi liste complesse, entrambi form articolati, entrambi integrazioni API, filtri, setup, refactor significativi, modifica ui, modifica logiche, modifica labels, implementazione di endpoint "
 )
 
 
@@ -57,22 +58,35 @@ STORY_POINT_PROMPT_few_shots = lambda target_text:(
 #     "potrebbe essere presente una sezione 'comandi' nel quale sarà possibile aggiungere o rimuovere complessità"
 
 # )
+# STORY_POINT_PROMPT_WITH_TEXT = (
+#     """Sei un assistente agile. A partire dal testo di una user story e dagli story point assegnati, 
+#     fornisci SEMPRE e OBBLIGATORIAMENTE due elementi:
+
+#     1. Una breve descrizione tecnica (massimo 20 parole).
+#     2. Una lista sintetica dei fattori che influenzano la complessità della user story.
+
+#     Rispetta rigorosamente il seguente formato JSON:
+#     {
+#         "descrizione": "<descrizione tecnica breve, obbligatoria>",
+#         "lista_fattori": ["fattore1", "fattore2", "..."]
+#     }
+   
+#     """
+# )
 STORY_POINT_PROMPT_WITH_TEXT = (
     """Sei un assistente agile. A partire dal testo di una user story e dagli story point assegnati, 
-    fornisci SEMPRE e OBBLIGATORIAMENTE due elementi:
+    fornisci SEMPRE e OBBLIGATORIAMENTE la seguente struttura JSON:
 
     1. Una breve descrizione tecnica (massimo 20 parole).
-    2. Una lista sintetica dei fattori che influenzano la complessità della user story.
+    
 
     Rispetta rigorosamente il seguente formato JSON:
     {
         "descrizione": "<descrizione tecnica breve, obbligatoria>",
-        "lista_fattori": ["fattore1", "fattore2", "..."]
     }
    
     """
 )
-
 ABSTRACT_SUMMARY_PROMPT = (
     "make a synthetic and abstract summary of what needs to be implemented in the task "
     "but without talking about the specific domain at all, you have to extract only the complete core of the task, "
