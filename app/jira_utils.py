@@ -1,12 +1,14 @@
-from app.config import JIRA_URL, EMAIL, API_TOKEN,STORY_POINTS_FLD
+from app.config import JIRA_URL, EMAIL, API_TOKEN,STORY_POINTS_FLD, ZUPIT_BOT_EMAIL, ZUPIT_BOT_TOKEN
 
 from bs4 import BeautifulSoup
 from jira import JIRA
 from asyncio import to_thread
-
 from app.models import JQLRequest
 import json
 from pathlib import Path
+from requests.auth import HTTPBasicAuth
+import requests
+
 trained_file_path = Path("data/trained_with.json")
 with trained_file_path.open("r", encoding="utf-8") as f:
     trained_data = json.load(f)
@@ -14,67 +16,187 @@ with trained_file_path.open("r", encoding="utf-8") as f:
 trained_issues_set = set()
 for issues in trained_data.values():
     trained_issues_set.update(issues)
-jira = JIRA(server=JIRA_URL, basic_auth=(EMAIL, API_TOKEN))
 
+zupit_bot_auth = HTTPBasicAuth(ZUPIT_BOT_EMAIL, ZUPIT_BOT_TOKEN)
+headers = {"Accept": "application/json", "Content-Type": "application/json"}
+
+jira_simonpaolo_lopez = JIRA(
+    server=JIRA_URL,
+    basic_auth=(EMAIL, API_TOKEN),
+    options={"rest_api_version": "3"} 
+)
+jira_zupit_bot = JIRA(
+    server=JIRA_URL,
+    basic_auth=(ZUPIT_BOT_EMAIL, ZUPIT_BOT_TOKEN),
+    options={"rest_api_version": "3"} 
+)
 def filter_trained(issues):
     return [i for i in issues if i.key not in trained_issues_set]
 
 def get_issue_text_with_described_images(issue_key: str) -> str:
-    issue = jira.issue(issue_key, expand="renderedFields")
+    issue = jira_simonpaolo_lopez.issue(issue_key, expand="renderedFields")
     summary = issue.fields.summary
     html_desc = issue.renderedFields.description or ""
 
     soup = BeautifulSoup(html_desc, "html.parser")
     clean = soup.get_text(separator="\n").strip()
     return f"{summary}\n\n{clean}"
+# def get_issue_text_with_described_images(issue_key: str) -> str:
+#     issue = jira.issue(issue_key, expand="renderedFields")
+#     summary = issue.fields.summary
+#     html_desc = issue.renderedFields.description or ""
+
+#     soup = BeautifulSoup(html_desc, "html.parser")
+#     clean_desc = soup.get_text(separator="\n").strip()
+
+#     raw_ac = getattr(issue.fields, "customfield_11332", None)
+#     ac_items = []
+    
+#     if raw_ac:
+#         text_matches = re.findall(r'text:\s*>?-?\s*(.*?)(?=\s+checked:)', raw_ac, flags=re.DOTALL)
+#         ac_items = [re.sub(r'\s+', ' ', match.strip()) for match in text_matches]
+                
+#     for i in range(len(ac_items)) :
+#         ac_items[i]=f"Obbiettivo:{i+1}.{ac_items[i]}"
+#     ac_items = "\n\n".join(ac_items)
+#     if(len(ac_items)>0):
+#         return f"{summary}\n\n{clean_desc}\n\n**Obbiettivi:**\n\n{ac_items}"
+#     else:
+#         return f"{summary}\n\n{clean_desc}"
 
 async def get_issue_text_async(issue_key: str) -> str:
     return await to_thread(get_issue_text_with_described_images, issue_key)
 
 async def get_all_queried_stories(jqlRequest: JQLRequest):
-    dict_key_issues = {}
-    if(jqlRequest.project=="all"):
-        projects=jira.projects()
-        keys=[proj.key for proj in projects]
+    def fetch_issues(jql: str):
+        all_issues = []
+        url = f"{JIRA_URL}/rest/api/3/search/jql"
+        auth = HTTPBasicAuth(EMAIL, API_TOKEN)
 
-        for k in keys:
-            issues = []
-            chunk_size = 100
-            start = 0
-           
-            jql = (
-                f'project = {k} AND issuetype = Story '
-                'AND "Story Points" IS NOT EMPTY '
-                f'AND {jqlRequest.date_jql}'
+        next_token = None
+        chunk = 100
+
+        while True:
+            params = {
+                "jql": jql,
+                "maxResults": chunk,
+                "fields": ["summary", STORY_POINTS_FLD, "created"],
+            }
+            if next_token:
+                params["nextPageToken"] = next_token
+
+            response = requests.get(
+                url,
+                headers={"Accept": "application/json"},
+                params=params,
+                auth=auth
             )
-            
-            while True:
-                batch = jira.search_issues(jql, startAt=start, maxResults=chunk_size,fields=f"summary,{STORY_POINTS_FLD}")
-                if len(batch) == 0:
-                    break
-                issues.extend(batch)
-                start += chunk_size
-            dict_key_issues[k] = filter_trained(issues)
+            response.raise_for_status()
+            data = response.json()
+
+            issues = data.get("issues", [])
+            if not issues:
+                break
+
+            all_issues.extend(issues)
+
+            next_token = data.get("nextPageToken")
+            if not next_token:
+                break
+
+        return all_issues
+
+    if jqlRequest.project == "all":
+        jql = (
+            'issuetype = Story AND "Story Points" IS NOT EMPTY '
+            f'AND {jqlRequest.date_jql}'
+        )
     else:
-        issues = []
-        chunk_size = 100
-        start = 0
-        
         jql = (
             f'project = {jqlRequest.project} AND issuetype = Story '
             'AND "Story Points" IS NOT EMPTY '
             f'AND {jqlRequest.date_jql}'
         )
-        
-        while True:
-            batch = jira.search_issues(jql, startAt=start, maxResults=chunk_size,fields=f"summary,{STORY_POINTS_FLD}")
-            if len(batch) == 0:
-                break
-            issues.extend(batch)
-            start += chunk_size
-        dict_key_issues[jqlRequest.project] = filter_trained(issues)
+
+    all_tasks = await to_thread(fetch_issues, jql)
+
+    filtered = [i for i in all_tasks if i["key"] not in trained_issues_set]
+
     return [
-        (issue.key, getattr(issue.fields, STORY_POINTS_FLD, "N/A"))
-        for issues in dict_key_issues.values()
-        for issue in issues
+        (
+            issue["key"],
+            issue["fields"].get(STORY_POINTS_FLD, "N/A"),
+            issue["fields"]["created"]
+        )
+        for issue in filtered
     ]
+
+
+def add_comment(issue_key: str, text: str):
+    """Aggiunge un nuovo commento all’issue."""
+    jira_zupit_bot.add_comment(issue_key, make_adf_comment(text))    
+
+
+def update_comment(issue_key: str, comment_id: str, text: str):
+    """Aggiorna un commento esistente."""
+    delete_comment(issue_key, comment_id)
+    jira_zupit_bot.add_comment(issue_key, make_adf_comment(text))
+
+
+def delete_comment(issue_key: str, comment_id: str):
+    """Elimina un commento da un ticket Jira (API v2 per compatibilità)"""
+    url = f"{JIRA_URL}/rest/api/2/issue/{issue_key}/comment/{comment_id}"
+    response = requests.delete(url, headers=headers, auth=zupit_bot_auth)
+    if response.status_code == 204:
+        return {"deleted": True}
+    elif response.status_code == 404:
+        return {"deleted": False, "reason": "Comment not found"}
+    else:
+        response.raise_for_status()
+
+def make_adf_comment(text: str) -> dict:
+    return {
+        "type": "doc",
+        "version": 1,
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [{"type": "text", "text": text}],
+            }
+        ],
+    }
+
+
+def format_verified_similars(similar_tasks: dict) -> str:
+    """
+    Converte un dizionario di similari del tipo:
+    { '2.0': [{'key': 'X', ...}, ...], ... }
+    in una stringa leggibile tipo:
+    "2sp: X, Y\n3sp: A, B"
+    """
+    if not similar_tasks:
+        return "Nessuna storia simile trovata."
+
+    lines = []
+    for sp, tasks in sorted(similar_tasks.items(), key=lambda x: float(x[0])):
+        keys = ", ".join(t["key"] for t in tasks)
+        lines.append(f"{sp} sp: {keys}")
+    return "\n".join(lines)
+
+
+def delete_steemo_comment(data: dict):
+    issue_key = data.get("key")
+    comments = data.get("fields", {}).get("comment", {}).get("comments", [])
+
+    steemo_comment = next(
+        (c for c in comments if "STEEMO" in c.get("body", "") and "ZupitBot" in c.get("author", {}).get("displayName", "")),
+        None
+    )
+
+    if not steemo_comment:
+        return {"issueKey": issue_key, "deleted": False, "reason": "No STEEMO comment found"}
+
+    comment_id = steemo_comment["id"]
+
+    result = delete_comment(issue_key, comment_id)
+    return {"issueKey": issue_key, "deleted": True, "comment_id": comment_id, **result}

@@ -1,25 +1,25 @@
 import os
-import re
 import statistics
 from collections import defaultdict
-from typing import Optional, Dict, Any
-
+from typing import  Dict
+import pandas as pd
 from fastapi import HTTPException
 from asyncio import gather
 
 import openai
 from collections import Counter
-
-from app.models import JQLRequest, StoryRequest
-from app.jira_utils import get_all_queried_stories, get_issue_text_async
-from app.embedding_utils import get_embedding, check_similarity, faiss_index, tasks
+import json
+from app.models import EstimationResponse, JQLRequest, StoryRequest
+from app.jira_utils import add_comment, format_verified_similars, get_all_queried_stories, get_issue_text_async, update_comment
+from app.embedding_utils import filter_similar_tasks, get_embedding, faiss_index_train,faiss_index_new,tasks_new, openai_description_with_factors, tasks, update_new_faiss_index
 from app.config import MODEL_NAME, NUM_SEMANTIC_DESCRIPTION, TOP_K_SIMILAR
 from app.prompts import (
     ABSTRACT_SUMMARY_PROMPT,
-    FINAL_ESTIMATION_COMMENT_PROMPT_TEMPLATE,
-    STORY_POINT_PROMPT
+    STORY_POINT_PROMPT,
 )
-from app.estimation_utils import analyze_results
+from app.estimation_utils import get_week_of_month
+from datetime import datetime
+
 aio_client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_KEY"))
 
 
@@ -36,30 +36,13 @@ def is_within_fib_steps(estimated: float, other: float, max_steps: int) -> bool:
     except ValueError:
         return False
 
-async def estimate_with_similars(data: StoryRequest) -> Dict[str, Any]:
+async def estimate_with_similars(data: StoryRequest) -> EstimationResponse:
     try:
-        full_input = await get_issue_text_async(data.issue_key)
-        if data.additional_comment:
-            full_input += f"\n\n*Importanti* aggiornamenti: {data.additional_comment}"
-
-        estimate_tasks = [
-            aio_client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=[{"role": "system", "content": STORY_POINT_PROMPT},
-                          {"role": "user", "content": full_input}],
-                temperature=0,
-            )
-            for _ in range(5)
-        ]
-        sp_responses = await gather(*estimate_tasks)
-
-        raw_outputs, estimates = [], []
-        for i, resp in enumerate(sp_responses, 1):
-            out = resp.choices[0].message.content.strip()
-            raw_outputs.append(out)
-            m = re.match(r"^\s*(\d+(\.\d+)?)", out.splitlines()[0])
-            if m:
-                estimates.append(float(m.group(1)))
+        full_input = await get_issue_text_async(data.issueKey)
+        if data.additionalComment:
+            full_input += f"\n\n **Importanti aggiornamenti:**{data.additionalComment}"
+        
+        estimates=await openai_chat_completion_for_times(full_input,5)        
 
         consensus_estimate = next((v for v in set(estimates) if estimates.count(v) >= 4), None)
         estimation_source = "consenso" if consensus_estimate is not None else "mediato"
@@ -67,43 +50,50 @@ async def estimate_with_similars(data: StoryRequest) -> Dict[str, Any]:
 
         min_est, max_est   = min(estimates, default=0), max(estimates, default=0)
         min_fib, max_fib   = closest_fibonacci(min_est), closest_fibonacci(max_est)
-        min_idx            = max(FIBONACCI_STEPS.index(min_fib) - 1, 0)
-        max_idx            = min(FIBONACCI_STEPS.index(max_fib) + 1, len(FIBONACCI_STEPS) - 1)
+        min_idx            = max(FIBONACCI_STEPS.index(min_fib) - data.maxFibDistance, 0)
+        max_idx            = min(FIBONACCI_STEPS.index(max_fib) + data.maxFibDistance, len(FIBONACCI_STEPS) - 1)
         allowed_idx        = set(range(min_idx, max_idx + 1))
 
-        should_search = (consensus_estimate is None) or data.search_files
+        should_search = (consensus_estimate is None) or data.searchFiles
         verified_similars: Dict[str, list] = defaultdict(list)
-
+        new_verified_similars: Dict[str, list] = defaultdict(list)
+        no_estimated=pd.read_csv("data/english_stories_with_emb_no_estimated.csv")
+        existing_row = no_estimated.loc[no_estimated['key'] == data.issueKey]
         if should_search:
-            query_text = await get_issue_text_async(data.issue_key)
+            query_text = await get_issue_text_async(data.issueKey)            
 
-            abstracts = [
-                (await aio_client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[{"role": "user",
-                               "content": f"{query_text}\n\n{ABSTRACT_SUMMARY_PROMPT}"}],
-                    temperature=1,      
-                )).choices[0].message.content.strip()
-                for _ in range(NUM_SEMANTIC_DESCRIPTION)
-            ]
+            if not existing_row.empty:
+                abstracts = existing_row['description'].tolist()
 
-            # Candidati similari via FAISS
+            else:
+                abstracts = [
+                    (
+                        await aio_client.chat.completions.create(
+                            model="gpt-4o",
+                            messages=[
+                                {"role": "user", "content": f"{query_text}\n\n{ABSTRACT_SUMMARY_PROMPT}"}
+                            ],
+                            temperature=1,
+                        )
+                    ).choices[0].message.content.strip()
+                    for _ in range(NUM_SEMANTIC_DESCRIPTION)
+                ]
+
             cand_scores = {}
             for abstr in abstracts:
                 q_emb = get_embedding(abstr).reshape(1, -1)
-                scores, idxs = faiss_index.search(q_emb, TOP_K_SIMILAR)
+                scores, idxs = faiss_index_train.search(q_emb, TOP_K_SIMILAR)
                 for s, idx in zip(scores[0], idxs[0]):
-                    if s < data.similarity_threshold:
+                    if s < data.similarityThreshold:
                         continue
                     key = tasks[idx]["story_key"]
-                    if key != data.issue_key and key not in cand_scores:
+                    if key != data.issueKey and key not in cand_scores:
                         cand_scores[key] = s
                     if len(cand_scores) >= TOP_K_SIMILAR:
                         break
 
-            found_keys = {k for k in await gather(
-                *[check_similarity(full_input, k) for k in cand_scores]
-            ) if k}
+            found_keys = await filter_similar_tasks(cand_scores.keys(), full_input)
+
 
             for t in tasks:
                 if t["story_key"] in found_keys:
@@ -118,8 +108,62 @@ async def estimate_with_similars(data: StoryRequest) -> Dict[str, Any]:
                     verified_similars[str(sp_val)].append({
                         "key":            t["story_key"],
                         "description":    t["description"],
-                        "similarity_score": f"{sim:.4f}"
+                        "similarityScore": f"{sim:.4f}"
                     })
+        
+
+
+# ============ 🔹 FAISS SEARCH: NEW INDEX ============ #
+               
+            if faiss_index_new is not None and len(tasks_new) > 0:
+                cand_scores_new = {}
+                for abstr in abstracts:
+                    q_emb = get_embedding(abstr).reshape(1, -1)
+                    scores, idxs = faiss_index_new.search(q_emb, TOP_K_SIMILAR)
+                    for s, idx in zip(scores[0], idxs[0]):
+                        if s < data.similarityThreshold:
+                            continue
+                        key = tasks_new[idx]["story_key"]
+                        if key != data.issueKey and key not in cand_scores_new:
+                            cand_scores_new[key] = s
+                        if len(cand_scores_new) >= TOP_K_SIMILAR:
+                            break
+                found_keys = await filter_similar_tasks(cand_scores_new.keys(), full_input)
+
+                for t in tasks_new:
+                    if t["story_key"] in found_keys:
+                        sp_val = float(t["storypoints"]) if t["storypoints"] else 0.0
+                        sim = cand_scores_new[t["story_key"]]
+                        new_verified_similars[str(sp_val)].append({
+                            "key": t["story_key"],
+                            "description": t["description"],
+                            "similarityScore": f"{sim:.4f}"
+                        })
+
+
+
+        best_description = abstracts[0]
+        best_score = -1.0
+        if(existing_row.empty):
+            for sp_group in verified_similars.values():
+                for item in sp_group:
+                    score = float(item["similarityScore"])
+                    if score > best_score:
+                        best_score = score
+                        best_description = item["description"]
+            
+        if existing_row.empty:           
+            embedding = get_embedding(best_description).reshape(1, -1)
+            embedding_json = json.dumps(embedding.tolist())
+
+            no_estimated.loc[len(no_estimated)] = [
+                data.issueKey,
+                best_description,
+                estimated_sp,
+                embedding_json
+            ]        
+            no_estimated.to_csv("data/english_stories_with_emb_no_estimated.csv", index=False)
+            update_new_faiss_index()
 
         if consensus_estimate is None:
             if verified_similars:
@@ -139,48 +183,138 @@ async def estimate_with_similars(data: StoryRequest) -> Dict[str, Any]:
                 estimated_sp   = closest_fibonacci(round(median_est, 2))
                 estimation_source = "fallback_median"
 
+        output_to_show= await openai_description_with_factors(full_input,estimated_sp)
 
-        output_to_show=""
-        for out in raw_outputs:
-            m = re.match(r"^\s*(\d+(\.\d+)?)", out.splitlines()[0])
-            if float(m.group(1))==float(estimated_sp):
-                output_to_show=out.splitlines()[2:]
-        return {
-            "issue_key":            data.issue_key,
-            "estimated_storypoints": estimated_sp,
-            "raw_model_output_full": output_to_show,
-            "estimation_method":     estimation_source,
-            "verified_similar_tasks": verified_similars if data.search_files else {},
+        response={
+            "issueKey":            data.issueKey,
+            "estimatedStorypoints": estimated_sp,
+            "rawModelOutputFull": output_to_show,
+            "estimationMethod":     estimation_source,
+            "verifiedSimilarTasks": verified_similars if data.searchFiles else {},
+            "newSimilarTasks": new_verified_similars if data.searchFiles else {},
         }
+        print(response)
+        return response
 
     except Exception as ex:
         raise HTTPException(status_code=500, detail=str(ex))
     
+async def openai_chat_completion_for_times(full_input, times):
+    estimate_task=[
+        aio_client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[{"role": "system", "content": STORY_POINT_PROMPT},
+                      {"role": "user", "content": full_input}],
+            temperature=0,
+        )
+        for _ in range(times)
 
-async def estimate_by_query(jqlRequest:JQLRequest):
-    issues=await get_all_queried_stories(jqlRequest)
-    print("issue to analyze: ",len(issues))
-    results=[]
-    for issue in issues:
+    ]
+
+    sp_response = await gather(*estimate_task, return_exceptions=True)
+    estimates=[float(resp.choices[0].message.content.strip()) for resp in sp_response]
+    return estimates
+
+async def estimate_by_query(jqlRequest: JQLRequest):
+    if os.path.exists(jqlRequest.file_to_save):
+        with open(jqlRequest.file_to_save, "r") as f:
+            existing_results = json.load(f)
+        already_estimated_keys = {item["issue_key"] for item in existing_results}
+    else:
+        existing_results = []
+        already_estimated_keys = set()
+
+    issues = await get_all_queried_stories(jqlRequest)
+    print("Issues da analizzare:", len(issues))
+    total = len(issues)
+    processed = 0
+    skipped = 0
+
+    for idx, issue in enumerate(issues, start=1):
+        issue_key = issue[0]
+        true_points = issue[1]
+        created_at = issue[2]
+
+        if issue_key in already_estimated_keys:
+            skipped += 1
+            continue
+
+        date_obj = datetime.strptime(created_at[:10], "%Y-%m-%d")
+        month = date_obj.month
+        year = date_obj.year
+        week = get_week_of_month(created_at)
+
         req = StoryRequest(
-                issue_key=issue[0],
-                additional_comment="",
-                search_files=False,
-                similarity_threshold=0.7
-            )
+            issueKey=issue_key,
+            additionalComment="",
+            searchFiles=False,
+            similarityThreshold=0.7
+        )
         try:
             est = await estimate_with_similars(req)
-            sp   = est.get("estimated_storypoints", -1)
-            err  = None
+            sp = est.get("estimatedStorypoints", -1)
+            err = None
         except Exception as e:
-            sp   = None
-            err  = str(e)
+            sp = None
+            err = str(e)
 
-        results.append({
-            "issue_key": issue[0],
-            "true_points": issue[1],
+        new_entry = {
+            "issue_key": issue_key,
+            "true_points": true_points,
             "stimated_points": sp,
+            "created": created_at,
+            "month": month,
+            "year": year,
+            "week_of_month": week,
             **({"error": err} if err else {})
-        })
-    analyze_results(results)
+        }
 
+        existing_results.append(new_entry)
+
+        with open(jqlRequest.file_to_save, "w") as f:
+            json.dump(existing_results, f, indent=4)
+
+        processed += 1
+        print(f"[{idx}/{total}] Elaborato: {issue_key} - Stimato: {sp}")
+
+    return {"estimated": processed, "skipped": skipped}
+
+
+
+async def estimate_for_jira(data: dict):
+    issue_key = data.get("key")
+    
+    fields = data.get("fields", {})
+
+    comments = fields.get("comment", {}).get("comments", [])
+
+    steemo_comment = next(
+        (c for c in comments if "STEEMO" in c.get("body", "") and "ZupitBot" in c.get("author", {}).get("displayName", "")),
+        None
+    )
+    
+    story_request = StoryRequest(
+        issueKey=issue_key,
+        additionalComment="",
+        searchFiles=True,
+        similarityThreshold=0.60,
+        maxFibDistance=1
+    )
+
+    estimation_result = await estimate_with_similars(story_request)
+    verified=format_verified_similars(estimation_result.get("verifiedSimilarTasks", {}))
+    new=format_verified_similars(estimation_result.get("newSimilarTasks", {}))
+    new_comment_body = (
+        f"Ciao sono STEEMO e penso che questa storia vada stimata: {estimation_result['estimatedStorypoints']}\n\n"
+        f"Descrizione breve di quello che ho capito: {estimation_result['rawModelOutputFull']}\n\n"
+        f"Similari verificati:\n{verified}\n\n"
+        f"Similari nuovi: {new}"
+    )
+
+    if steemo_comment:
+            comment_id = steemo_comment["id"]
+            update_comment(issue_key, comment_id, new_comment_body)
+    else:
+        add_comment(issue_key, new_comment_body)
+
+    return 

@@ -11,3 +11,7 @@ faiss-cpu
 fastapi 
 uvicorn
 python-dotenv
+matplotlib
+seaborn
+plotly
+memvid
