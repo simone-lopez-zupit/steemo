@@ -80,10 +80,8 @@ STORY_POINT_PROMPT_WITH_TEXT = (
     1. Una breve descrizione tecnica (massimo 20 parole).
     
 
-    Rispetta rigorosamente il seguente formato JSON:
-    {
-        "descrizione": "<descrizione tecnica breve, obbligatoria>",
-    }
+    Rispetta rigorosamente il seguente formato:
+    <descrizione tecnica breve, obbligatoria>,
    
     """
 )

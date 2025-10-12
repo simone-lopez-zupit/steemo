@@ -1,9 +1,8 @@
-from app.config import JIRA_URL, EMAIL, API_TOKEN,STORY_POINTS_FLD
+from app.config import JIRA_URL, EMAIL, API_TOKEN,STORY_POINTS_FLD, ZUPIT_BOT_EMAIL, ZUPIT_BOT_TOKEN
 
 from bs4 import BeautifulSoup
 from jira import JIRA
 from asyncio import to_thread
-import re
 from app.models import JQLRequest
 import json
 from pathlib import Path
@@ -17,16 +16,25 @@ with trained_file_path.open("r", encoding="utf-8") as f:
 trained_issues_set = set()
 for issues in trained_data.values():
     trained_issues_set.update(issues)
-jira = JIRA(
+
+zupit_bot_auth = HTTPBasicAuth(ZUPIT_BOT_EMAIL, ZUPIT_BOT_TOKEN)
+headers = {"Accept": "application/json", "Content-Type": "application/json"}
+
+jira_simonpaolo_lopez = JIRA(
     server=JIRA_URL,
     basic_auth=(EMAIL, API_TOKEN),
+    options={"rest_api_version": "3"} 
+)
+jira_zupit_bot = JIRA(
+    server=JIRA_URL,
+    basic_auth=(ZUPIT_BOT_EMAIL, ZUPIT_BOT_TOKEN),
     options={"rest_api_version": "3"} 
 )
 def filter_trained(issues):
     return [i for i in issues if i.key not in trained_issues_set]
 
 def get_issue_text_with_described_images(issue_key: str) -> str:
-    issue = jira.issue(issue_key, expand="renderedFields")
+    issue = jira_simonpaolo_lopez.issue(issue_key, expand="renderedFields")
     summary = issue.fields.summary
     html_desc = issue.renderedFields.description or ""
 
@@ -122,3 +130,73 @@ async def get_all_queried_stories(jqlRequest: JQLRequest):
         )
         for issue in filtered
     ]
+
+
+def add_comment(issue_key: str, text: str):
+    """Aggiunge un nuovo commento all’issue."""
+    jira_zupit_bot.add_comment(issue_key, make_adf_comment(text))    
+
+
+def update_comment(issue_key: str, comment_id: str, text: str):
+    """Aggiorna un commento esistente."""
+    delete_comment(issue_key, comment_id)
+    jira_zupit_bot.add_comment(issue_key, make_adf_comment(text))
+
+
+def delete_comment(issue_key: str, comment_id: str):
+    """Elimina un commento da un ticket Jira (API v2 per compatibilità)"""
+    url = f"{JIRA_URL}/rest/api/2/issue/{issue_key}/comment/{comment_id}"
+    response = requests.delete(url, headers=headers, auth=zupit_bot_auth)
+    if response.status_code == 204:
+        return {"deleted": True}
+    elif response.status_code == 404:
+        return {"deleted": False, "reason": "Comment not found"}
+    else:
+        response.raise_for_status()
+
+def make_adf_comment(text: str) -> dict:
+    return {
+        "type": "doc",
+        "version": 1,
+        "content": [
+            {
+                "type": "paragraph",
+                "content": [{"type": "text", "text": text}],
+            }
+        ],
+    }
+
+
+def format_verified_similars(similar_tasks: dict) -> str:
+    """
+    Converte un dizionario di similari del tipo:
+    { '2.0': [{'key': 'X', ...}, ...], ... }
+    in una stringa leggibile tipo:
+    "2sp: X, Y\n3sp: A, B"
+    """
+    if not similar_tasks:
+        return "Nessuna storia simile trovata."
+
+    lines = []
+    for sp, tasks in sorted(similar_tasks.items(), key=lambda x: float(x[0])):
+        keys = ", ".join(t["key"] for t in tasks)
+        lines.append(f"{sp} sp: {keys}")
+    return "\n".join(lines)
+
+
+def delete_steemo_comment(data: dict):
+    issue_key = data.get("key")
+    comments = data.get("fields", {}).get("comment", {}).get("comments", [])
+
+    steemo_comment = next(
+        (c for c in comments if "STEEMO" in c.get("body", "") and "ZupitBot" in c.get("author", {}).get("displayName", "")),
+        None
+    )
+
+    if not steemo_comment:
+        return {"issueKey": issue_key, "deleted": False, "reason": "No STEEMO comment found"}
+
+    comment_id = steemo_comment["id"]
+
+    result = delete_comment(issue_key, comment_id)
+    return {"issueKey": issue_key, "deleted": True, "comment_id": comment_id, **result}

@@ -1,12 +1,13 @@
 import os
 import sys
 from fastapi import FastAPI
-from app.estimation import estimate_by_query, estimate_with_similars
+from app.estimation import estimate_by_query, estimate_for_jira, estimate_with_similars
 from app.models import ChartDataRequest, ChartType, EstimationResponse, JQLRequest, StoryRequest
 from app.history import query_chart, query_outlier_tasks
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.estimation_utils import returnMockedES
+from app.jira_utils import add_comment, delete_comment, delete_steemo_comment, update_comment
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
 
@@ -44,6 +45,17 @@ def get_total_stacked_query(data: ChartDataRequest):
 @app.post("/get_scatter_accurcy_chart",tags=["charts"])
 def get_scatter_accuacy_query(data:ChartDataRequest):
     return query_chart(data,ChartType.scatterAccuracy)
+
 @app.post("/get_outlier_tasks", tags=["tasks"])
 def get_outlier_tasks(data: ChartDataRequest):
     return query_outlier_tasks(data)
+
+@app.post("/jira_estimate", tags=["estimation"])
+async def jira_estimate(data: dict):
+    return estimate_for_jira(data)
+    
+@app.post("/delete_steemo_comment", tags=["estimation"])
+async def delete_steema(data: dict):
+    return delete_steemo_comment(data)
+    
+

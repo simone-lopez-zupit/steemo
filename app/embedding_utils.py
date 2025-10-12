@@ -6,12 +6,12 @@ import logging
 import pandas as pd
 from app.config import JSON_EMBED_FILE, OPENAI_KEY, MAX_PARALLEL_AI
 from app.jira_utils import get_issue_text_async
-from asyncio import Semaphore, gather
+from asyncio import gather
 from app.prompts import STORY_POINT_PROMPT_WITH_TEXT, TASK_SIMILARITY_PROMPT_TEMPLATE
-
+import re
+import json
 log = logging.getLogger(__name__)
 aio_client = openai.AsyncOpenAI(api_key=OPENAI_KEY)
-semaphore = Semaphore(MAX_PARALLEL_AI)
 
 with open(JSON_EMBED_FILE, "r", encoding="utf-8") as f:
     dataset = json.load(f)
@@ -88,7 +88,7 @@ def get_embedding(text: str) -> np.ndarray:
     return emb
 
 async def check_similarity(target_text: str, candidate_key: str,) -> bool:
-    return candidate_key
+    return True
 
 
 # async def ollama_check_similarity(text1: str, text2: str) -> bool:
@@ -130,7 +130,7 @@ async def filter_similar_tasks(keys, full_input):
     async def is_similar(k):
         try:
             candidate_text = await get_issue_text_async(k)
-            return k if await openai_check_similarity(full_input, candidate_text) else None
+            return k if await check_similarity(full_input, candidate_text) else None
         except Exception as e:
             print(f"Errore su {k}: {e}")
             return None
@@ -167,6 +167,29 @@ async def filter_similar_tasks(keys, full_input):
 #         result = r.json()["response"].strip()
 #         clean_result = re.sub(r'^```json|```$', '', result, flags=re.MULTILINE).strip()
 #         return clean_result
+
+
+def extract_description_from_json_block(text: str) -> str:
+    """
+    Estrae il valore del campo 'descrizione' o 'descrizione_tecnica'
+    da un blocco ```json ... ``` nel testo.
+    Restituisce solo la stringa della descrizione, pulita.
+    """
+    match = re.search(r"```json\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
+    if not match:
+        return text.strip() 
+
+    try:
+        json_content = json.loads(match.group(1))
+        descrizione = (
+            json_content.get("descrizione_tecnica")
+            or json_content.get("descrizione")
+            or ""
+        ).strip()
+        return descrizione
+    except Exception as e:
+        print(f"⚠️ Errore parsing JSON: {e}")
+        return text.strip()
     
 async def openai_description_with_factors(full_input, sp) -> str:
     response = await aio_client.chat.completions.create(
@@ -177,4 +200,6 @@ async def openai_description_with_factors(full_input, sp) -> str:
         ],
         temperature=0,
     )
-    return response.choices[0].message.content.strip()
+    return extract_description_from_json_block(response.choices[0].message.content.strip())
+
+

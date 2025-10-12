@@ -10,7 +10,7 @@ import openai
 from collections import Counter
 import json
 from app.models import EstimationResponse, JQLRequest, StoryRequest
-from app.jira_utils import get_all_queried_stories, get_issue_text_async
+from app.jira_utils import add_comment, format_verified_similars, get_all_queried_stories, get_issue_text_async, update_comment
 from app.embedding_utils import filter_similar_tasks, get_embedding, faiss_index_train,faiss_index_new,tasks_new, openai_description_with_factors, tasks, update_new_faiss_index
 from app.config import MODEL_NAME, NUM_SEMANTIC_DESCRIPTION, TOP_K_SIMILAR
 from app.prompts import (
@@ -278,3 +278,43 @@ async def estimate_by_query(jqlRequest: JQLRequest):
         print(f"[{idx}/{total}] Elaborato: {issue_key} - Stimato: {sp}")
 
     return {"estimated": processed, "skipped": skipped}
+
+
+
+async def estimate_for_jira(data: dict):
+    issue_key = data.get("key")
+    
+    fields = data.get("fields", {})
+
+    comments = fields.get("comment", {}).get("comments", [])
+
+    steemo_comment = next(
+        (c for c in comments if "STEEMO" in c.get("body", "") and "ZupitBot" in c.get("author", {}).get("displayName", "")),
+        None
+    )
+    
+    story_request = StoryRequest(
+        issueKey=issue_key,
+        additionalComment="",
+        searchFiles=True,
+        similarityThreshold=0.60,
+        maxFibDistance=1
+    )
+
+    estimation_result = await estimate_with_similars(story_request)
+    verified=format_verified_similars(estimation_result.get("verifiedSimilarTasks", {}))
+    new=format_verified_similars(estimation_result.get("newSimilarTasks", {}))
+    new_comment_body = (
+        f"Ciao sono STEEMO e penso che questa storia vada stimata: {estimation_result['estimatedStorypoints']}\n\n"
+        f"Descrizione breve di quello che ho capito: {estimation_result['rawModelOutputFull']}\n\n"
+        f"Similari verificati:\n{verified}\n\n"
+        f"Similari nuovi: {new}"
+    )
+
+    if steemo_comment:
+            comment_id = steemo_comment["id"]
+            update_comment(issue_key, comment_id, new_comment_body)
+    else:
+        add_comment(issue_key, new_comment_body)
+
+    return 
