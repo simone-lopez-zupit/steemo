@@ -4,77 +4,78 @@ import faiss
 import openai
 import logging
 import pandas as pd
-from app.config import JSON_EMBED_FILE, OPENAI_KEY, MAX_PARALLEL_AI
+from app.config import OPENAI_KEY
 from app.jira_utils import get_issue_text_async
 from asyncio import gather
 from app.prompts import STORY_POINT_PROMPT_WITH_TEXT, TASK_SIMILARITY_PROMPT_TEMPLATE
 import re
 import json
+
+from app.repository import load_embeddings
 log = logging.getLogger(__name__)
 aio_client = openai.AsyncOpenAI(api_key=OPENAI_KEY)
 
-with open(JSON_EMBED_FILE, "r", encoding="utf-8") as f:
-    dataset = json.load(f)
-tasks = dataset if isinstance(dataset, list) else list(dataset.values())
-embeddings_train = np.array([t["embedding"] for t in tasks], dtype="float32")
+def load_embeddings_from_db(table: str):
+    rows=load_embeddings(table)
 
-faiss.normalize_L2(embeddings_train)
-faiss_index_train = faiss.IndexFlatIP(embeddings_train.shape[1])
-faiss_index_train.add(embeddings_train)
+    tasks = []
+    embeddings = []
 
-
-CSV_FILE = "data/english_stories_with_emb_no_estimated.csv"
-no_estimated = pd.read_csv(CSV_FILE)
-tasks_new = []
-if not no_estimated.empty:
-    for _, row in no_estimated.iterrows():
-        emb = np.array(json.loads(row["embedding"]), dtype="float32").reshape(1, -1)
-        tasks_new.append({
-            "story_key": row["key"],
-            "description": row["description"],
-            "storypoints": row.get("story_points", None),
-            "embedding": emb.tolist()
+    for story_key, description, storypoints, emb_blob in rows:
+        emb = np.frombuffer(emb_blob, dtype="float32")
+        tasks.append({
+            "story_key": story_key,
+            "description": description,
+            "storypoints": storypoints,
+            "embedding": emb
         })
+        embeddings.append(emb)
 
-embeddings_new = np.vstack([
-    np.array(t["embedding"], dtype="float32").reshape(-1)
-    for t in tasks_new
-])
-if len(embeddings_new) > 0:
-    faiss.normalize_L2(embeddings_new)
-    faiss_index_new = faiss.IndexFlatIP(embeddings_new.shape[1])
-    faiss_index_new.add(embeddings_new)
-else:
-    faiss_index_new = None 
+    if not embeddings:
+        return tasks, None
 
+    embeddings = np.vstack(embeddings).astype("float32")
+    faiss.normalize_L2(embeddings)
+    index = faiss.IndexFlatIP(embeddings.shape[1])
+    index.add(embeddings)
+    return tasks, index
 
 
-def update_new_faiss_index():
-    """Ricarica solo l'indice FAISS delle nuove storie dal CSV."""
-    global faiss_index_new, tasks_new
+tasks_train, faiss_index_train = load_embeddings_from_db("trained_tasks")
+tasks_new, faiss_index_new = load_embeddings_from_db("new_tasks")
 
-    no_estimated = pd.read_csv(CSV_FILE)
+
+
+def refresh_new_index():
+    """
+    Ricarica tasks_new e faiss_index_new dal DB 'new_tasks'.
+    Chiamala dopo ogni inserimento nel DB per mantenere FAISS aggiornato.
+    """
+    global tasks_new, faiss_index_new
+
+    rows=load_embeddings_from_db("new_tasks")
+
     tasks_new = []
-    embeddings_list = []
+    embeddings = []
 
-    for _, row in no_estimated.iterrows():
-        emb = np.array(json.loads(row["embedding"]), dtype="float32").reshape(1, -1)
+    for story_key, description, storypoints, emb_blob in rows:
+        emb = np.frombuffer(emb_blob, dtype="float32")
         tasks_new.append({
-            "story_key": row["key"],
-            "description": row["description"],
-            "storypoints": row.get("story_points", None),
-            "embedding": emb.tolist()
+            "story_key": story_key,
+            "description": description,
+            "storypoints": storypoints,
+            "embedding": emb,
         })
-        embeddings_list.append(emb)
+        embeddings.append(emb)
 
-    if embeddings_list:
-        embeddings = np.vstack(embeddings_list)
-        faiss.normalize_L2(embeddings)
-        faiss_index_new = faiss.IndexFlatIP(embeddings.shape[1])
-        faiss_index_new.add(embeddings)
-    else:
+    if not embeddings:
         faiss_index_new = None
+        return
 
+    embeddings = np.vstack(embeddings).astype("float32")
+    faiss.normalize_L2(embeddings)
+    faiss_index_new = faiss.IndexFlatIP(embeddings.shape[1])
+    faiss_index_new.add(embeddings)
 
 
 
@@ -130,7 +131,7 @@ async def filter_similar_tasks(keys, full_input):
     async def is_similar(k):
         try:
             candidate_text = await get_issue_text_async(k)
-            return k if await check_similarity(full_input, candidate_text) else None
+            return k if await openai_check_similarity(full_input, candidate_text) else None
         except Exception as e:
             print(f"Errore su {k}: {e}")
             return None

@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.estimation_utils import returnMockedES
 from app.jira_utils import add_comment, delete_comment, delete_steemo_comment, update_comment
+from app.feedback import give_feedback
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..")))
 
@@ -52,10 +53,17 @@ def get_outlier_tasks(data: ChartDataRequest):
 
 @app.post("/jira_estimate", tags=["estimation"])
 async def jira_estimate(data: dict):
-    return estimate_for_jira(data)
+
+    return await estimate_for_jira(data)
     
 @app.post("/delete_steemo_comment", tags=["estimation"])
 async def delete_steema(data: dict):
     return delete_steemo_comment(data)
+
+@app.post("/feedback", tags=["estimation"])
+async def feedback(data: dict):
+    issue_key = data.get("issueKey")
+    feedback = data.get("feedback")
+    give_feedback(issue_key, feedback)
     
 

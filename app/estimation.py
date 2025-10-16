@@ -11,7 +11,7 @@ from collections import Counter
 import json
 from app.models import EstimationResponse, JQLRequest, StoryRequest
 from app.jira_utils import add_comment, format_verified_similars, get_all_queried_stories, get_issue_text_async, update_comment
-from app.embedding_utils import filter_similar_tasks, get_embedding, faiss_index_train,faiss_index_new,tasks_new, openai_description_with_factors, tasks, update_new_faiss_index
+from app.embedding_utils import filter_similar_tasks, get_embedding, faiss_index_train,faiss_index_new,tasks_new,tasks_train, openai_description_with_factors
 from app.config import MODEL_NAME, NUM_SEMANTIC_DESCRIPTION, TOP_K_SIMILAR
 from app.prompts import (
     ABSTRACT_SUMMARY_PROMPT,
@@ -19,7 +19,8 @@ from app.prompts import (
 )
 from app.estimation_utils import get_week_of_month
 from datetime import datetime
-
+from app.repository import get_task_description, insert_new_task, task_exists
+from app.embedding_utils import refresh_new_index
 aio_client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_KEY"))
 
 
@@ -57,13 +58,12 @@ async def estimate_with_similars(data: StoryRequest) -> EstimationResponse:
         should_search = (consensus_estimate is None) or data.searchFiles
         verified_similars: Dict[str, list] = defaultdict(list)
         new_verified_similars: Dict[str, list] = defaultdict(list)
-        no_estimated=pd.read_csv("data/english_stories_with_emb_no_estimated.csv")
-        existing_row = no_estimated.loc[no_estimated['key'] == data.issueKey]
         if should_search:
             query_text = await get_issue_text_async(data.issueKey)            
 
-            if not existing_row.empty:
-                abstracts = existing_row['description'].tolist()
+            if task_exists(data.issueKey):
+                desc = get_task_description(data.issueKey)
+                abstracts = [desc] if desc else []
 
             else:
                 abstracts = [
@@ -86,7 +86,7 @@ async def estimate_with_similars(data: StoryRequest) -> EstimationResponse:
                 for s, idx in zip(scores[0], idxs[0]):
                     if s < data.similarityThreshold:
                         continue
-                    key = tasks[idx]["story_key"]
+                    key = tasks_train[idx]["story_key"]
                     if key != data.issueKey and key not in cand_scores:
                         cand_scores[key] = s
                     if len(cand_scores) >= TOP_K_SIMILAR:
@@ -95,7 +95,7 @@ async def estimate_with_similars(data: StoryRequest) -> EstimationResponse:
             found_keys = await filter_similar_tasks(cand_scores.keys(), full_input)
 
 
-            for t in tasks:
+            for t in tasks_train:
                 if t["story_key"] in found_keys:
                     sp_val = float(t["storypoints"])
                     try:
@@ -142,9 +142,9 @@ async def estimate_with_similars(data: StoryRequest) -> EstimationResponse:
 
 
 
-        best_description = abstracts[0]
+        best_description = abstracts[0] if abstracts else full_input
         best_score = -1.0
-        if(existing_row.empty):
+        if not task_exists(data.issueKey):
             for sp_group in verified_similars.values():
                 for item in sp_group:
                     score = float(item["similarityScore"])
@@ -152,18 +152,14 @@ async def estimate_with_similars(data: StoryRequest) -> EstimationResponse:
                         best_score = score
                         best_description = item["description"]
             
-        if existing_row.empty:           
             embedding = get_embedding(best_description).reshape(1, -1)
-            embedding_json = json.dumps(embedding.tolist())
-
-            no_estimated.loc[len(no_estimated)] = [
-                data.issueKey,
-                best_description,
-                estimated_sp,
-                embedding_json
-            ]        
-            no_estimated.to_csv("data/english_stories_with_emb_no_estimated.csv", index=False)
-            update_new_faiss_index()
+            insert_new_task(
+                issue_key=data.issueKey,
+                description=best_description,
+                storypoints=estimated_sp,
+                embedding=embedding,
+            )
+            refresh_new_index()
 
         if consensus_estimate is None:
             if verified_similars:
@@ -300,15 +296,14 @@ async def estimate_for_jira(data: dict):
         similarityThreshold=0.60,
         maxFibDistance=1
     )
-
     estimation_result = await estimate_with_similars(story_request)
     verified=format_verified_similars(estimation_result.get("verifiedSimilarTasks", {}))
     new=format_verified_similars(estimation_result.get("newSimilarTasks", {}))
     new_comment_body = (
         f"Ciao sono STEEMO e penso che questa storia vada stimata: {estimation_result['estimatedStorypoints']}\n\n"
-        f"Descrizione breve di quello che ho capito: {estimation_result['rawModelOutputFull']}\n\n"
-        f"Similari verificati:\n{verified}\n\n"
-        f"Similari nuovi: {new}"
+        f"Breve descrizione: {estimation_result['rawModelOutputFull']}\n\n"
+        f"Riferimenti conosciuti:\n{verified}\n\n"
+        f"Simili coerenti e non sbagliate:\n{new}"
     )
 
     if steemo_comment:
