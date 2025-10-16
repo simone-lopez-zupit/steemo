@@ -1,8 +1,7 @@
-import os
 import pandas as pd
 from app.models import ChartDataRequest, ChartType
+from app.repository import fetch_all_stories
 
-INPUT_FILE = os.path.join(os.path.dirname(__file__), "..", "tutto.json")
 FIBONACCI_SCALE = [0, 0.5, 1, 2, 3, 5, 8, 13, 21, 34]
 PROJECT_COLORS = [
     
@@ -212,17 +211,33 @@ def to_scatter_format(df: pd.DataFrame):
             },
         ]
     }
-def load_df(filepath: str) -> pd.DataFrame:
-    df = pd.read_json(filepath)
+def load_df() -> pd.DataFrame:
+    base_columns = [
+        "issue_key",
+        "true_points",
+        "stimated_points",
+        "created",
+        "month",
+        "year",
+        "week_of_month",
+    ]
+    records = fetch_all_stories()
+    df = pd.DataFrame.from_records(records)
+    if df.empty:
+        return pd.DataFrame(columns=base_columns + ["project"])
+
+    df = df.reindex(columns=base_columns)
+
     df["created"] = pd.to_datetime(df["created"], errors="coerce", utc=True)
-    df = df[df["created"].notna()]
+    df = df[df["created"].notna()].copy()
     df["created"] = df["created"].dt.tz_convert(None).dt.date
+
     df["project"] = df["issue_key"].str.split("-").str[0]
     return df
 
 
 def query_chart(request: ChartDataRequest, chartType: ChartType):
-    df = load_df(INPUT_FILE)
+    df = load_df()
 
     if chartType == ChartType.lineTimeSeries:
         grouped = prepare_chart_data(request, df)
@@ -239,8 +254,7 @@ def query_chart(request: ChartDataRequest, chartType: ChartType):
     return {}
 
 def query_outlier_tasks(request: ChartDataRequest):
-    df = load_df(INPUT_FILE)
+    df = load_df()
     grouped=prepare_outlier_tasks(request,df)
     payload = grouped.to_dict(orient="records")
     return payload
-

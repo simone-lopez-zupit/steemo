@@ -13,7 +13,6 @@ class StoryRequest(BaseModel):
 class JQLRequest(BaseModel):
     project:str="all"
     date_jql:str="created >= -2w"
-    file_to_save:str="temp.json"
 
 class TimeGranularity(str, Enum):
     week = "week"

@@ -2,44 +2,55 @@ from pathlib import Path
 import numpy as np
 import sqlite3
 
-DB_PATH = Path("data/embeddings.db")
+DB_PATH = Path(__file__).resolve().parents[1] / "data" / "embeddings.db"
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+conn.row_factory = sqlite3.Row
 cursor = conn.cursor()
+
+
 def insert_task(table: str, story_key: str, description: str, storypoints: float, embedding: np.ndarray):
-    """Inserisce o aggiorna una storia nel DB"""
-    cursor.execute(f"""
-    INSERT OR REPLACE INTO {table} (story_key, description, storypoints, embedding)
-    VALUES (?, ?, ?, ?)
-    """, (story_key, description, storypoints, embedding.tobytes()))
+    """Inserisce o aggiorna una storia nel DB."""
+    cursor.execute(
+        f"""
+        INSERT OR REPLACE INTO {table} (story_key, description, storypoints, embedding)
+        VALUES (?, ?, ?, ?)
+        """,
+        (story_key, description, storypoints, embedding.tobytes()),
+    )
     conn.commit()
 
 
 def get_all_tasks(table: str):
-    """Restituisce tutte le storie da una tabella"""
+    """Restituisce tutte le storie da una tabella."""
     cursor.execute(f"SELECT story_key, description, storypoints, embedding FROM {table}")
     rows = cursor.fetchall()
     tasks = []
-    for r in rows:
-        tasks.append({
-            "story_key": r[0],
-            "description": r[1],
-            "storypoints": r[2],
-            "embedding": np.frombuffer(r[3], dtype="float32")
-        })
+    for story_key, description, storypoints, embedding in rows:
+        tasks.append(
+            {
+                "story_key": story_key,
+                "description": description,
+                "storypoints": storypoints,
+                "embedding": np.frombuffer(embedding, dtype="float32"),
+            }
+        )
     return tasks
 
-def task_exists(issue_key: str, table="new_tasks") -> bool:
+
+def task_exists(issue_key: str, table: str = "new_tasks") -> bool:
     cursor.execute(f"SELECT 1 FROM {table} WHERE story_key = ?", (issue_key,))
     return cursor.fetchone() is not None
 
-def insert_new_task(issue_key: str, description: str, storypoints: float, embedding: np.ndarray, table="new_tasks"):
+
+def insert_new_task(issue_key: str, description: str, storypoints: float, embedding: np.ndarray, table: str = "new_tasks"):
     cursor.execute(
         f"INSERT INTO {table} (story_key, description, storypoints, embedding) VALUES (?, ?, ?, ?)",
         (issue_key, description, storypoints, embedding.tobytes()),
     )
     conn.commit()
 
-def get_task_description(issue_key: str, table="new_tasks") -> str | None:
+
+def get_task_description(issue_key: str, table: str = "new_tasks") -> str | None:
     """
     Restituisce la descrizione salvata nel DB per una determinata storia.
     Se non trovata, restituisce None.
@@ -48,12 +59,14 @@ def get_task_description(issue_key: str, table="new_tasks") -> str | None:
     row = cursor.fetchone()
     return row[0] if row else None
 
-def update_feedback(issue_key: str, feedback: str, table="new_tasks"):
+
+def update_feedback(issue_key: str, feedback: str, table: str = "new_tasks"):
     cursor.execute(
         f"UPDATE {table} SET feedback = ? WHERE story_key = ?",
-        (feedback, issue_key)
+        (feedback, issue_key),
     )
     conn.commit()
+
 
 def load_embeddings(table: str):
     """
@@ -64,4 +77,56 @@ def load_embeddings(table: str):
     cursor.execute(f"SELECT story_key, description, storypoints, embedding FROM {table}")
     return cursor.fetchall()
 
-    
+
+def fetch_all_stories() -> list[dict]:
+    """
+    Restituisce tutte le storie salvate nella tabella story come lista di dizionari.
+    """
+    rows = conn.execute(
+        """
+        SELECT issue_key, true_points, stimated_points, created, month, year, week_of_month
+        FROM story
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def story_exists(issue_key: str) -> bool:
+    """
+    Restituisce True se la storia e' presente nella tabella story.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM story WHERE issue_key = ?",
+        (issue_key,),
+    ).fetchone()
+    return row is not None
+
+
+def upsert_story(
+    *,
+    issue_key: str,
+    true_points,
+    stimated_points,
+    created: str,
+    month,
+    year,
+    week_of_month,
+) -> None:
+    """
+    Inserisce o aggiorna una riga nella tabella story.
+    """
+    conn.execute(
+        """
+        INSERT INTO story (issue_key, true_points, stimated_points, created, month, year, week_of_month)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(issue_key) DO UPDATE SET
+            true_points = excluded.true_points,
+            stimated_points = excluded.stimated_points,
+            created = excluded.created,
+            month = excluded.month,
+            year = excluded.year,
+            week_of_month = excluded.week_of_month
+        """,
+        (issue_key, true_points, stimated_points, created, month, year, week_of_month),
+    )
+    conn.commit()

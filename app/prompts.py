@@ -22,7 +22,7 @@ IMAGE_DESCRIPTION_PROMPT = (
 TASK_SIMILARITY_PROMPT_TEMPLATE = lambda target_text, candidate_text: (
     "Confronta tecnicamente questi due task Jira, ignorando completamente il contesto o il dominio. "
     "Valuta solo *cosa* viene chiesto di sviluppare, non *per chi* o *in che ambito*.\n"
-    "Rispondi `true` solo se i due task richiedono lo sviluppo di funzionalità simili, con simile sforzo implementativo.\n"
+    "Rispondi `true` solo se i due task richiedono lo sviluppo di funzionalità simili.\n"
     "---\nPRIMO TASK:\n"
     f"{target_text}\n\n"
     "---\nSECONDO TASK:\n"

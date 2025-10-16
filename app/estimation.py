@@ -8,7 +8,6 @@ from asyncio import gather
 
 import openai
 from collections import Counter
-import json
 from app.models import EstimationResponse, JQLRequest, StoryRequest
 from app.jira_utils import add_comment, format_verified_similars, get_all_queried_stories, get_issue_text_async, update_comment
 from app.embedding_utils import filter_similar_tasks, get_embedding, faiss_index_train,faiss_index_new,tasks_new,tasks_train, openai_description_with_factors
@@ -19,7 +18,13 @@ from app.prompts import (
 )
 from app.estimation_utils import get_week_of_month
 from datetime import datetime
-from app.repository import get_task_description, insert_new_task, task_exists
+from app.repository import (
+    fetch_all_stories,
+    get_task_description,
+    insert_new_task,
+    task_exists,
+    upsert_story,
+)
 from app.embedding_utils import refresh_new_index
 aio_client = openai.AsyncOpenAI(api_key=os.getenv("OPENAI_KEY"))
 
@@ -54,10 +59,10 @@ async def estimate_with_similars(data: StoryRequest) -> EstimationResponse:
         min_idx            = max(FIBONACCI_STEPS.index(min_fib) - data.maxFibDistance, 0)
         max_idx            = min(FIBONACCI_STEPS.index(max_fib) + data.maxFibDistance, len(FIBONACCI_STEPS) - 1)
         allowed_idx        = set(range(min_idx, max_idx + 1))
-
         should_search = (consensus_estimate is None) or data.searchFiles
         verified_similars: Dict[str, list] = defaultdict(list)
         new_verified_similars: Dict[str, list] = defaultdict(list)
+        abstracts: list[str] = []
         if should_search:
             query_text = await get_issue_text_async(data.issueKey)            
 
@@ -141,25 +146,24 @@ async def estimate_with_similars(data: StoryRequest) -> EstimationResponse:
                         })
 
 
-
-        best_description = abstracts[0] if abstracts else full_input
-        best_score = -1.0
-        if not task_exists(data.issueKey):
-            for sp_group in verified_similars.values():
-                for item in sp_group:
-                    score = float(item["similarityScore"])
-                    if score > best_score:
-                        best_score = score
-                        best_description = item["description"]
+            best_description = abstracts[0] if abstracts else full_input
+            best_score = -1.0
+            if not task_exists(data.issueKey):
+                for sp_group in verified_similars.values():
+                    for item in sp_group:
+                        score = float(item["similarityScore"])
+                        if score > best_score:
+                            best_score = score
+                            best_description = item["description"]
             
-            embedding = get_embedding(best_description).reshape(1, -1)
-            insert_new_task(
-                issue_key=data.issueKey,
-                description=best_description,
-                storypoints=estimated_sp,
-                embedding=embedding,
-            )
-            refresh_new_index()
+                embedding = get_embedding(best_description).reshape(1, -1)
+                insert_new_task(
+                    issue_key=data.issueKey,
+                    description=best_description,
+                    storypoints=estimated_sp,
+                    embedding=embedding,
+                )
+                refresh_new_index()
 
         if consensus_estimate is None:
             if verified_similars:
@@ -212,13 +216,8 @@ async def openai_chat_completion_for_times(full_input, times):
     return estimates
 
 async def estimate_by_query(jqlRequest: JQLRequest):
-    if os.path.exists(jqlRequest.file_to_save):
-        with open(jqlRequest.file_to_save, "r") as f:
-            existing_results = json.load(f)
-        already_estimated_keys = {item["issue_key"] for item in existing_results}
-    else:
-        existing_results = []
-        already_estimated_keys = set()
+    existing_results = fetch_all_stories()
+    already_estimated_keys = {item["issue_key"] for item in existing_results}
 
     issues = await get_all_queried_stories(jqlRequest)
     print("Issues da analizzare:", len(issues))
@@ -246,6 +245,7 @@ async def estimate_by_query(jqlRequest: JQLRequest):
             searchFiles=False,
             similarityThreshold=0.7
         )
+        breakpoint()
         try:
             est = await estimate_with_similars(req)
             sp = est.get("estimatedStorypoints", -1)
@@ -254,21 +254,19 @@ async def estimate_by_query(jqlRequest: JQLRequest):
             sp = None
             err = str(e)
 
-        new_entry = {
-            "issue_key": issue_key,
-            "true_points": true_points,
-            "stimated_points": sp,
-            "created": created_at,
-            "month": month,
-            "year": year,
-            "week_of_month": week,
-            **({"error": err} if err else {})
-        }
-
-        existing_results.append(new_entry)
-
-        with open(jqlRequest.file_to_save, "w") as f:
-            json.dump(existing_results, f, indent=4)
+        if err:
+            print(f"Errore durante la stima di {issue_key}: {err}")
+        else:
+            upsert_story(
+                issue_key=issue_key,
+                true_points=true_points,
+                stimated_points=sp,
+                created=created_at,
+                month=month,
+                year=year,
+                week_of_month=week,
+            )
+            already_estimated_keys.add(issue_key)
 
         processed += 1
         print(f"[{idx}/{total}] Elaborato: {issue_key} - Stimato: {sp}")
@@ -302,8 +300,8 @@ async def estimate_for_jira(data: dict):
     new_comment_body = (
         f"Ciao sono STEEMO e penso che questa storia vada stimata: {estimation_result['estimatedStorypoints']}\n\n"
         f"Breve descrizione: {estimation_result['rawModelOutputFull']}\n\n"
-        f"Riferimenti conosciuti:\n{verified}\n\n"
-        f"Simili coerenti e non sbagliate:\n{new}"
+        f"Storie simili sulle quali baso la mia steema:\n{verified}\n\n"
+        f"Storie simili le cui steeme sono giuste o spostano approvate dai PO:\n{new}"
     )
 
     if steemo_comment:
