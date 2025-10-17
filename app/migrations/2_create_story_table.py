@@ -43,4 +43,5 @@ for item in data:
     ))
 
 conn.commit()
+
 print(f"✅ Importati {len(data)} record in story.")
