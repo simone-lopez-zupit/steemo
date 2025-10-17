@@ -1,0 +1,41 @@
+services:
+  - type: web
+    name: steemo
+    region: frankfurt
+    plan: free
+    env: docker
+    autoDeploy: true
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /docs
+    envVars:
+      - key: JIRA_URL
+        value: https://yourcompany.atlassian.net
+      - key: EMAIL
+        value: your-email@example.com
+      - key: API_TOKEN
+        sync: false
+      - key: OPENAI_KEY
+        sync: false
+      - key: ZUPIT_BOT_TOKEN
+        sync: false
+      - key: ZUPIT_BOT_EMAIL
+        value: zupit-bot@example.com
+      - key: MODEL_NAME
+        value: ft:gpt-3.5-turbo-0125:personal::model-id
+      - key: STORY_POINTS_FLD
+        value: customfield_10005
+      - key: TOP_K_SIMILAR
+        value: "20"
+      - key: NUM_SEMANTIC_DESCRIPTION
+        value: "5"
+
+# Render non conserva un disco persistente sui piani free: al passaggio al piano a pagamento
+# aggiungi un disk per preservare `data/embeddings.db` tra i deploy.
+
+# jobs:
+#   - type: cron
+#     name: steemo-weekly-backup
+#     env: docker
+#     schedule: "0 4 * * 1" # ogni lunedì alle 04:00 UTC
+#     dockerfilePath: ./Dockerfile
+#     command: bash scripts/backup_db.sh

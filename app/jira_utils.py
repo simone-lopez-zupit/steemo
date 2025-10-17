@@ -9,13 +9,7 @@ from pathlib import Path
 from requests.auth import HTTPBasicAuth
 import requests
 
-trained_file_path = Path("data/trained_with.json")
-with trained_file_path.open("r", encoding="utf-8") as f:
-    trained_data = json.load(f)
-
-trained_issues_set = set()
-for issues in trained_data.values():
-    trained_issues_set.update(issues)
+from app.repository import task_exists
 
 zupit_bot_auth = HTTPBasicAuth(ZUPIT_BOT_EMAIL, ZUPIT_BOT_TOKEN)
 headers = {"Accept": "application/json", "Content-Type": "application/json"}
@@ -31,7 +25,7 @@ jira_zupit_bot = JIRA(
     options={"rest_api_version": "3"} 
 )
 def filter_trained(issues):
-    return [i for i in issues if i.key not in trained_issues_set]
+    return [i for i in issues if not task_exists(i.key)]
 
 def get_issue_text_with_described_images(issue_key: str) -> str:
     issue = jira_simonpaolo_lopez.issue(issue_key, expand="renderedFields")
@@ -120,7 +114,7 @@ async def get_all_queried_stories(jqlRequest: JQLRequest):
 
     all_tasks = await to_thread(fetch_issues, jql)
 
-    filtered = [i for i in all_tasks if i["key"] not in trained_issues_set]
+    filtered = [i for i in all_tasks if not task_exists(i["key"])]
 
     return [
         (

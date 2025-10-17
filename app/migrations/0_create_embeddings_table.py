@@ -1,7 +1,7 @@
 import pandas as pd
 import json
 import numpy as np
-from jira_extractor.steemo.app.repository import insert_task
+from app.repository import insert_task
 import sqlite3
 from pathlib import Path
 
