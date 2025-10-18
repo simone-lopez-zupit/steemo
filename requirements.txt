@@ -8,3 +8,4 @@ faiss-cpu
 fastapi
 uvicorn
 python-dotenv
+psycopg2-binary
