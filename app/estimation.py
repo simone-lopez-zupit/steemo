@@ -148,7 +148,7 @@ async def estimate_with_similars(data: StoryRequest) -> EstimationResponse:
 
             best_description = abstracts[0] if abstracts else full_input
             best_score = -1.0
-            if not task_exists(data.issueKey):
+            if not task_exists(data.issueKey) and not task_exists(data.issueKey, table="trained_tasks"):
                 for sp_group in verified_similars.values():
                     for item in sp_group:
                         score = float(item["similarityScore"])
