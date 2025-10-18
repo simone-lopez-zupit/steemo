@@ -3,9 +3,10 @@ services:
     name: steemo
     region: frankfurt
     plan: free
-    env: docker
+    env: python # ✅ cambia da docker a python
     autoDeploy: true
-    dockerfilePath: ./Dockerfile
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /docs
     envVars:
       - key: JIRA_URL
@@ -28,7 +29,6 @@ services:
         value: "20"
       - key: NUM_SEMANTIC_DESCRIPTION
         value: "5"
-
 # Render non conserva un disco persistente sui piani free: al passaggio al piano a pagamento
 # aggiungi un disk per preservare `data/embeddings.db` tra i deploy.
 
