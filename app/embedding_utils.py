@@ -16,12 +16,26 @@ log = logging.getLogger(__name__)
 aio_client = openai.AsyncOpenAI(api_key=OPENAI_KEY)
 
 def load_embeddings_from_db(table: str):
-    rows=load_embeddings(table)
+    rows = load_embeddings(table)
 
     tasks = []
     embeddings = []
 
-    for story_key, description, storypoints, emb_blob in rows:
+    for row in rows:
+        if isinstance(row, dict):
+            story_key = row.get("story_key")
+            description = row.get("description")
+            storypoints = row.get("storypoints")
+            emb_blob = row.get("embedding")
+        else:
+            story_key, description, storypoints, emb_blob = row
+
+        if emb_blob is None:
+            continue
+
+        if isinstance(emb_blob, memoryview):
+            emb_blob = emb_blob.tobytes()
+
         emb = np.frombuffer(emb_blob, dtype="float32")
         tasks.append({
             "story_key": story_key,
@@ -53,29 +67,7 @@ def refresh_new_index():
     """
     global tasks_new, faiss_index_new
 
-    rows=load_embeddings_from_db("new_tasks")
-
-    tasks_new = []
-    embeddings = []
-
-    for story_key, description, storypoints, emb_blob in rows:
-        emb = np.frombuffer(emb_blob, dtype="float32")
-        tasks_new.append({
-            "story_key": story_key,
-            "description": description,
-            "storypoints": storypoints,
-            "embedding": emb,
-        })
-        embeddings.append(emb)
-
-    if not embeddings:
-        faiss_index_new = None
-        return
-
-    embeddings = np.vstack(embeddings).astype("float32")
-    faiss.normalize_L2(embeddings)
-    faiss_index_new = faiss.IndexFlatIP(embeddings.shape[1])
-    faiss_index_new.add(embeddings)
+    tasks_new, faiss_index_new = load_embeddings_from_db("new_tasks")
 
 
 
@@ -202,5 +194,4 @@ async def openai_description_with_factors(full_input, sp) -> str:
         temperature=0,
     )
     return extract_description_from_json_block(response.choices[0].message.content.strip())
-
 
