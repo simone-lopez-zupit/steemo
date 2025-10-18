@@ -1,24 +1,12 @@
-import os
 from pathlib import Path
 import numpy as np
 import sqlite3
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-_default_db = BASE_DIR / "data" / "embeddings.db"
-_db_override = os.getenv("STEEMO_DB_PATH") or os.getenv("DB_PATH")
-if _db_override:
-    db_candidate = Path(_db_override)
-    if not db_candidate.is_absolute():
-        db_candidate = (BASE_DIR / db_candidate).resolve()
-    DB_PATH = db_candidate
-else:
-    DB_PATH = _default_db
-
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-
+DB_PATH = Path(__file__).resolve().parents[1] / "data" / "embeddings.db"
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 conn.row_factory = sqlite3.Row
 cursor = conn.cursor()
+
 
 
 def insert_task(table: str, story_key: str, description: str, storypoints: float, embedding: np.ndarray):
