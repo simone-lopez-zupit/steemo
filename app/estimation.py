@@ -10,7 +10,8 @@ import openai
 from collections import Counter
 from app.models import EstimationResponse, JQLRequest, StoryRequest
 from app.jira_utils import add_comment, format_verified_similars, get_all_queried_stories, get_issue_text_async, update_comment
-from app.embedding_utils import filter_similar_tasks, get_embedding, faiss_index_train,faiss_index_new,tasks_new,tasks_train, openai_description_with_factors
+from app.embedding_utils import filter_similar_tasks, get_embedding,openai_description_with_factors
+import app.embedding_utils as embeddings
 from app.config import MODEL_NAME, NUM_SEMANTIC_DESCRIPTION, TOP_K_SIMILAR
 from app.prompts import (
     ABSTRACT_SUMMARY_PROMPT,
@@ -87,11 +88,11 @@ async def estimate_with_similars(data: StoryRequest) -> EstimationResponse:
             cand_scores = {}
             for abstr in abstracts:
                 q_emb = get_embedding(abstr).reshape(1, -1)
-                scores, idxs = faiss_index_train.search(q_emb, TOP_K_SIMILAR)
+                scores, idxs = embeddings.faiss_index_train.search(q_emb, TOP_K_SIMILAR)
                 for s, idx in zip(scores[0], idxs[0]):
                     if s < data.similarityThreshold:
                         continue
-                    key = tasks_train[idx]["story_key"]
+                    key = embeddings.tasks_train[idx]["story_key"]
                     if key != data.issueKey and key not in cand_scores:
                         cand_scores[key] = s
                     if len(cand_scores) >= TOP_K_SIMILAR:
@@ -100,7 +101,7 @@ async def estimate_with_similars(data: StoryRequest) -> EstimationResponse:
             found_keys = await filter_similar_tasks(cand_scores.keys(), full_input)
 
 
-            for t in tasks_train:
+            for t in embeddings.tasks_train:
                 if t["story_key"] in found_keys:
                     sp_val = float(t["storypoints"])
                     try:
@@ -118,24 +119,23 @@ async def estimate_with_similars(data: StoryRequest) -> EstimationResponse:
         
 
 
-# ============ 🔹 FAISS SEARCH: NEW INDEX ============ #
-               
-            if faiss_index_new is not None and len(tasks_new) > 0:
+# ============ 🔹 FAISS SEARCH: NEW INDEX ============ #     
+            if embeddings.faiss_index_new is not None and len(embeddings.tasks_new) > 0:
                 cand_scores_new = {}
                 for abstr in abstracts:
                     q_emb = get_embedding(abstr).reshape(1, -1)
-                    scores, idxs = faiss_index_new.search(q_emb, TOP_K_SIMILAR)
+                    scores, idxs = embeddings.faiss_index_new.search(q_emb, TOP_K_SIMILAR)
                     for s, idx in zip(scores[0], idxs[0]):
                         if s < data.similarityThreshold:
                             continue
-                        key = tasks_new[idx]["story_key"]
+                        key = embeddings.tasks_new[idx]["story_key"]
                         if key != data.issueKey and key not in cand_scores_new:
                             cand_scores_new[key] = s
                         if len(cand_scores_new) >= TOP_K_SIMILAR:
                             break
                 found_keys = await filter_similar_tasks(cand_scores_new.keys(), full_input)
 
-                for t in tasks_new:
+                for t in embeddings.tasks_new:
                     if t["story_key"] in found_keys:
                         sp_val = float(t["storypoints"]) if t["storypoints"] else 0.0
                         sim = cand_scores_new[t["story_key"]]

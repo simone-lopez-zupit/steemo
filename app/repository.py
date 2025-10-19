@@ -75,7 +75,7 @@ def load_embeddings(table: str):
     """Carica le storie e i loro embedding da una tabella del DB."""
     base_query = f"SELECT story_key, description, storypoints, embedding FROM {table}"
     if table == "new_tasks":
-        filtered_query = base_query + " WHERE UPPER(TRIM(feedback)) IS DISTINCT FROM 'SBAGLIATA'"
+        filtered_query = base_query + " WHERE UPPER(TRIM(feedback)) IN ('GIUSTA', 'SPOSTA')"
         try:
             cursor.execute(filtered_query)
         except psycopg2.errors.UndefinedColumn:
