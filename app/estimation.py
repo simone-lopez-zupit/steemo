@@ -245,7 +245,6 @@ async def estimate_by_query(jqlRequest: JQLRequest):
             searchFiles=False,
             similarityThreshold=0.7
         )
-        breakpoint()
         try:
             est = await estimate_with_similars(req)
             sp = est.get("estimatedStorypoints", -1)
