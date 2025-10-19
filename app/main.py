@@ -18,9 +18,13 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['http://localhost:4200'],
-    allow_methods=['*'],
-    allow_headers=['*'],
+    allow_origins=[
+        "http://localhost:4200",
+        "https://steemo-webapp.onrender.com",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 @app.post(
     "/estimate_with_similars/",
