@@ -74,15 +74,10 @@ STORY_POINT_PROMPT_few_shots = lambda target_text:(
 #     """
 # )
 STORY_POINT_PROMPT_WITH_TEXT = (
-    """Sei un assistente agile. A partire dal testo di una user story e dagli story point assegnati, 
-    fornisci SEMPRE e OBBLIGATORIAMENTE la seguente struttura JSON:
-
-    1. Una breve descrizione tecnica (massimo 20 parole).
-    
-
-    Rispetta rigorosamente il seguente formato:
-    <descrizione tecnica breve, obbligatoria>,
-   
+    """
+        Sei un assistente agile. A partire dal testo di una user story e dagli story point assegnati, 
+        fornisci SEMPRE e OBBLIGATORIAMENTE: Una breve descrizione tecnica (massimo 20 parole).
+        Rispondi SOLO con la descrizione tecnica, senza aggiungere altro.
     """
 )
 ABSTRACT_SUMMARY_PROMPT = (

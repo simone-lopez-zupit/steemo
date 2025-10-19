@@ -119,6 +119,7 @@ async def openai_check_similarity(text1: str, text2: str) -> bool:
        
 
 async def filter_similar_tasks(keys, full_input):
+    print("similar keys:",keys)
     async def is_similar(k):
         try:
             candidate_text = await get_issue_text_async(k)
@@ -167,21 +168,26 @@ def extract_description_from_json_block(text: str) -> str:
     da un blocco ```json ... ``` nel testo.
     Restituisce solo la stringa della descrizione, pulita.
     """
-    match = re.search(r"```json\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
+    match = re.search(r"```json\s*(.*?)\s*```", text, flags=re.DOTALL)
     if not match:
-        return text.strip() 
+        return text.strip().strip('"')
 
     try:
-        json_content = json.loads(match.group(1))
-        descrizione = (
-            json_content.get("descrizione_tecnica")
-            or json_content.get("descrizione")
-            or ""
-        ).strip()
-        return descrizione
+        raw_content = match.group(1).strip()
+        if raw_content.startswith(("{", "[")):
+            json_content = json.loads(raw_content)
+            descrizione = (
+                json_content.get("descrizione_tecnica")
+                or json_content.get("descrizione")
+                or ""
+            ).strip()
+            return descrizione
+        if raw_content.startswith('"'):
+            return json.loads(raw_content).strip()
+        return raw_content.strip().strip('"')
     except Exception as e:
         print(f"⚠️ Errore parsing JSON: {e}")
-        return text.strip()
+        return raw_content.strip().strip('"') if "raw_content" in locals() else text.strip().strip('"')
     
 async def openai_description_with_factors(full_input, sp) -> str:
     response = await aio_client.chat.completions.create(
@@ -193,4 +199,3 @@ async def openai_description_with_factors(full_input, sp) -> str:
         temperature=0,
     )
     return extract_description_from_json_block(response.choices[0].message.content.strip())
-
