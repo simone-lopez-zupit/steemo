@@ -63,10 +63,9 @@ tasks_new, faiss_index_new = load_embeddings_from_db("new_tasks")
 def refresh_new_index():
     """
     Ricarica tasks_new e faiss_index_new dal DB 'new_tasks'.
-    Chiamala dopo ogni inserimento nel DB per mantenere FAISS aggiornato.
+    Da chiamare dopo ogni inserimento nel DB per mantenere FAISS aggiornato.
     """
     global tasks_new, faiss_index_new
-
     tasks_new, faiss_index_new = load_embeddings_from_db("new_tasks")
 
 
