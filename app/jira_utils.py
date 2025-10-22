@@ -126,15 +126,44 @@ async def get_all_queried_stories(jqlRequest: JQLRequest):
     ]
 
 
+def remove_watcher(issue_key: str):
+    user_url = f"{JIRA_URL}/rest/api/3/user/search?query={ZUPIT_BOT_EMAIL}"
+    user_resp = requests.get(user_url, headers=headers, auth=zupit_bot_auth)
+    user_resp.raise_for_status()
+    users = user_resp.json()
+    if not users:
+        raise ValueError(f"Nessun utente trovato per {ZUPIT_BOT_EMAIL}")
+    
+    account_id = users[0]["accountId"]
+
+    url = f"{JIRA_URL}/rest/api/3/issue/{issue_key}/watchers"
+    response = requests.delete(
+        f"{url}?accountId={account_id}",
+        headers=headers,
+        auth=zupit_bot_auth,
+    )
+
+    if response.status_code in (204, 404):
+        print(f"✅ Watcher {ZUPIT_BOT_EMAIL} rimosso da {issue_key}")
+        return {"issueKey": issue_key, "removed": response.status_code == 204}
+
+    print(f"⚠️ Errore rimozione watcher {ZUPIT_BOT_EMAIL} da {issue_key}: {response.status_code} {response.text}")
+    response.raise_for_status()
+    return {"issueKey": issue_key, "removed": False, "error": response.text}
+
+
 def add_comment(issue_key: str, text: str):
     """Aggiunge un nuovo commento all’issue."""
-    jira_zupit_bot.add_comment(issue_key, make_adf_comment(text))    
+    jira_zupit_bot.add_comment(issue_key, make_adf_comment(text))
+    jira_zupit_bot.remove_watcher(issue_key)
+    remove_watcher(issue_key)
 
 
 def update_comment(issue_key: str, comment_id: str, text: str):
     """Aggiorna un commento esistente."""
     delete_comment(issue_key, comment_id)
     jira_zupit_bot.add_comment(issue_key, make_adf_comment(text))
+    remove_watcher(issue_key)
 
 
 def delete_comment(issue_key: str, comment_id: str):
