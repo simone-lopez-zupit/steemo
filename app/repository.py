@@ -3,13 +3,27 @@ import psycopg2
 import psycopg2.extras
 from app.config import DATABASE_URL
 
+conn = None
 
-conn = psycopg2.connect(DATABASE_URL)
+def get_connection():
+    global conn
+    if conn is None or conn.closed != 0:
+        print("Riconnessione al database PostgreSQL (probabile restart o maintenance).")
+        conn = psycopg2.connect(DATABASE_URL)
+        conn.autocommit = False
+    return conn
 
+
+
+def get_cursor(cursor_factory=None):
+    """Crea un cursore sempre valido con connessione viva."""
+    conn = get_connection()
+    return conn.cursor(cursor_factory=cursor_factory)
 
 
 def insert_task(table: str, story_key: str, description: str, storypoints: float, embedding: np.ndarray):
     """Inserisce o aggiorna una storia nel DB."""
+    conn = get_connection()
     with conn.cursor() as cur:
         cur.execute(
             f"""
@@ -28,6 +42,7 @@ def insert_task(table: str, story_key: str, description: str, storypoints: float
 
 def get_all_tasks(table: str):
     """Restituisce tutte le storie da una tabella."""
+    conn = get_connection()
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(f"SELECT story_key, description, storypoints, embedding FROM {table}")
         rows = cur.fetchall() or []
@@ -45,12 +60,14 @@ def get_all_tasks(table: str):
 
 
 def task_exists(issue_key: str, table: str = "new_tasks") -> bool:
+    conn = get_connection()
     with conn.cursor() as cur:
         cur.execute(f"SELECT 1 FROM {table} WHERE story_key = %s", (issue_key,))
         return cur.fetchone() is not None
 
 
 def insert_new_task(issue_key: str, description: str, storypoints: float, embedding: np.ndarray, table: str = "new_tasks"):
+    conn = get_connection()
     with conn.cursor() as cur:
         cur.execute(
             f"INSERT INTO {table} (story_key, description, storypoints, embedding) VALUES (%s, %s, %s, %s)",
@@ -60,6 +77,7 @@ def insert_new_task(issue_key: str, description: str, storypoints: float, embedd
 
 
 def get_task_description(issue_key: str, table: str = "new_tasks") -> str | None:
+    conn = get_connection()
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(f"SELECT description FROM {table} WHERE story_key = %s", (issue_key,))
         row = cur.fetchone()
@@ -67,6 +85,7 @@ def get_task_description(issue_key: str, table: str = "new_tasks") -> str | None
 
 
 def update_feedback(issue_key: str, feedback: str, table: str = "new_tasks"):
+    conn = get_connection()
     normalized_feedback = feedback.strip() if isinstance(feedback, str) else feedback
     with conn.cursor() as cur:
         cur.execute(
@@ -74,14 +93,15 @@ def update_feedback(issue_key: str, feedback: str, table: str = "new_tasks"):
             (normalized_feedback, issue_key),
         )
     conn.commit()
+
     if table == "new_tasks":
         from app.embedding_utils import refresh_new_index
-
         refresh_new_index()
 
 
 def load_embeddings(table: str):
     """Carica le storie e i loro embedding da una tabella del DB."""
+    conn = get_connection()
     base_query = f"SELECT story_key, description, storypoints, embedding FROM {table}"
     if table == "new_tasks":
         filtered_query = base_query + " WHERE UPPER(TRIM(feedback)) IN ('GIUSTA', 'SPOSTA')"
@@ -97,8 +117,8 @@ def load_embeddings(table: str):
         return cur.fetchall() or []
 
 
-
 def fetch_all_stories() -> list[dict]:
+    conn = get_connection()
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
@@ -110,6 +130,7 @@ def fetch_all_stories() -> list[dict]:
 
 
 def story_exists(issue_key: str) -> bool:
+    conn = get_connection()
     with conn.cursor() as cur:
         cur.execute("SELECT 1 FROM story WHERE issue_key = %s", (issue_key,))
         return cur.fetchone() is not None
@@ -126,6 +147,7 @@ def upsert_story(
     week_of_month,
 ) -> None:
     """Inserisce o aggiorna una riga nella tabella story."""
+    conn = get_connection()
     with conn.cursor() as cur:
         cur.execute(
             """
