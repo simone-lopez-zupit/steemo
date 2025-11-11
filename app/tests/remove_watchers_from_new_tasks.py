@@ -1,9 +1,9 @@
 
 from app.jira_utils import remove_watcher
-from app.repository import conn
-
+from app.repository import get_connection
 
 def fetch_story_keys() -> list[str]:
+    conn = get_connection()
     with conn.cursor() as cur:
         cur.execute("SELECT story_key FROM new_tasks")
         rows = cur.fetchall() or []

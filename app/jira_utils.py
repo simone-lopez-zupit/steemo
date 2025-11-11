@@ -155,7 +155,6 @@ def remove_watcher(issue_key: str):
 def add_comment(issue_key: str, text: str):
     """Aggiunge un nuovo commento all’issue."""
     jira_zupit_bot.add_comment(issue_key, make_adf_comment(text))
-    jira_zupit_bot.remove_watcher(issue_key)
     remove_watcher(issue_key)
 
 
